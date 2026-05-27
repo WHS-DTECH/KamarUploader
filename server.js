@@ -1,0 +1,714 @@
+require('dotenv').config();
+
+const path = require('path');
+const express = require('express');
+const cors = require('cors');
+const { Pool } = require('pg');
+
+const app = express();
+const port = Number(process.env.PORT || 10000);
+
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
+  console.error('DATABASE_URL is not set. Add it as an environment variable.');
+  process.exit(1);
+}
+
+const pool = new Pool({
+  connectionString: databaseUrl,
+  ssl: databaseUrl.includes('localhost') ? false : { rejectUnauthorized: false }
+});
+
+app.use(cors());
+app.use(express.json({ limit: '25mb' }));
+app.use(express.static(path.join(__dirname)));
+
+const STAFF_FIELDS = {
+  code: ['code', 'staffcode'],
+  last_name: ['lastname', 'surname', 'familyname'],
+  first_name: ['firstname', 'givenname', 'forename'],
+  title: ['title'],
+  email_school: ['emailschool', 'email', 'schoolemail', 'emailaddress']
+};
+
+const STUDENT_PERIOD_KEYS = [
+  'mon_p1_1', 'mon_p1_2', 'mon_p2', 'mon_i', 'mon_p3', 'mon_p4', 'mon_l', 'mon_p5',
+  'tue_p1_1', 'tue_p1_2', 'tue_p2', 'tue_i', 'tue_p3', 'tue_p4', 'tue_l', 'tue_p5',
+  'wed_p1_1', 'wed_p1_2', 'wed_p2', 'wed_i', 'wed_p3', 'wed_p4', 'wed_l', 'wed_p5',
+  'thu_p1_1', 'thu_p1_2', 'thu_p2', 'thu_i', 'thu_p3', 'thu_p4', 'thu_l', 'thu_p5',
+  'fri_p1_1', 'fri_p1_2', 'fri_p2', 'fri_i', 'fri_p3', 'fri_p4', 'fri_l', 'fri_p5'
+];
+
+const STUDENT_BASE_KEYS = ['student_name', 'id_number', 'form_class', 'year_level'];
+const STUDENT_KEYS = [...STUDENT_BASE_KEYS, ...STUDENT_PERIOD_KEYS];
+
+const STUDENT_ALIASES = {
+  student_name: ['studentname', 'name'],
+  id_number: ['idnumber', 'studentid', 'id'],
+  form_class: ['formclass', 'form', 'class'],
+  year_level: ['yearlevel', 'year']
+};
+
+function normalizeKey(value) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function parseUploadDate(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().slice(0, 10);
+}
+
+function buildIndexLookup(headers) {
+  const map = new Map();
+  headers.forEach((header, index) => {
+    map.set(normalizeKey(header), index);
+  });
+  return map;
+}
+
+function pickValueByAliases(row, indexLookup, aliases) {
+  for (const alias of aliases) {
+    const idx = indexLookup.get(normalizeKey(alias));
+    if (idx == null) continue;
+    return String(row[idx] || '').trim();
+  }
+  return '';
+}
+
+function mapStaffRow(row, indexLookup) {
+  const mapped = {};
+  Object.keys(STAFF_FIELDS).forEach((field) => {
+    mapped[field] = pickValueByAliases(row, indexLookup, STAFF_FIELDS[field]);
+  });
+  return mapped;
+}
+
+function buildStudentHeaderMap(headers) {
+  const headerToKey = new Map();
+  const normalizedTargets = new Map(STUDENT_KEYS.map((key) => [normalizeKey(key), key]));
+
+  headers.forEach((header, idx) => {
+    const normalized = normalizeKey(header);
+
+    if (normalizedTargets.has(normalized)) {
+      headerToKey.set(idx, normalizedTargets.get(normalized));
+      return;
+    }
+
+    for (const [target, aliases] of Object.entries(STUDENT_ALIASES)) {
+      if (aliases.includes(normalized)) {
+        headerToKey.set(idx, target);
+        return;
+      }
+    }
+  });
+
+  return headerToKey;
+}
+
+function mapStudentRow(row, headerMap) {
+  const mapped = Object.fromEntries(STUDENT_KEYS.map((key) => [key, '']));
+
+  for (const [idx, key] of headerMap.entries()) {
+    mapped[key] = String(row[idx] || '').trim();
+  }
+
+  return mapped;
+}
+
+function mapTimetableRow(headers, row) {
+  const mapped = {};
+  headers.forEach((header, idx) => {
+    const key = String(header || '').trim();
+    if (!key) return;
+    mapped[key] = String(row[idx] || '').trim();
+  });
+  return mapped;
+}
+
+function getTimetableTeacherKey(rowObj) {
+  const aliases = ['teacher', 'teachercode', 'code', 'staffcode'];
+  const entries = Object.entries(rowObj);
+
+  for (const [key, value] of entries) {
+    if (aliases.includes(normalizeKey(key))) {
+      return String(value || '').trim();
+    }
+  }
+
+  return '';
+}
+
+function getTimetableTeacherName(rowObj) {
+  const aliases = ['teachername', 'teacher_name', 'staffname', 'name'];
+  const entries = Object.entries(rowObj);
+
+  for (const [key, value] of entries) {
+    if (aliases.includes(normalizeKey(key))) {
+      return String(value || '').trim();
+    }
+  }
+
+  return '';
+}
+
+async function withTransaction(work) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await work(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function ensureSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS staff_upload (
+      id BIGSERIAL PRIMARY KEY,
+      code TEXT,
+      last_name TEXT,
+      first_name TEXT,
+      title TEXT,
+      email_school TEXT UNIQUE,
+      status TEXT NOT NULL DEFAULT 'Current',
+      upload_year INTEGER,
+      upload_term TEXT,
+      upload_date DATE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS student_upload (
+      id BIGSERIAL PRIMARY KEY,
+      student_name TEXT,
+      id_number TEXT UNIQUE,
+      form_class TEXT,
+      year_level TEXT,
+      mon_p1_1 TEXT, mon_p1_2 TEXT, mon_p2 TEXT, mon_i TEXT, mon_p3 TEXT, mon_p4 TEXT, mon_l TEXT, mon_p5 TEXT,
+      tue_p1_1 TEXT, tue_p1_2 TEXT, tue_p2 TEXT, tue_i TEXT, tue_p3 TEXT, tue_p4 TEXT, tue_l TEXT, tue_p5 TEXT,
+      wed_p1_1 TEXT, wed_p1_2 TEXT, wed_p2 TEXT, wed_i TEXT, wed_p3 TEXT, wed_p4 TEXT, wed_l TEXT, wed_p5 TEXT,
+      thu_p1_1 TEXT, thu_p1_2 TEXT, thu_p2 TEXT, thu_i TEXT, thu_p3 TEXT, thu_p4 TEXT, thu_l TEXT, thu_p5 TEXT,
+      fri_p1_1 TEXT, fri_p1_2 TEXT, fri_p2 TEXT, fri_i TEXT, fri_p3 TEXT, fri_p4 TEXT, fri_l TEXT, fri_p5 TEXT,
+      status TEXT NOT NULL DEFAULT 'Current',
+      upload_year INTEGER,
+      upload_term TEXT,
+      upload_date DATE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS timetable_upload (
+      teacher TEXT PRIMARY KEY,
+      teacher_name TEXT,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      status TEXT NOT NULL DEFAULT 'Current',
+      upload_year INTEGER,
+      upload_term TEXT,
+      upload_date DATE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+}
+
+app.get('/health', (_req, res) => {
+  res.json({ ok: true });
+});
+
+app.get('/api/staff_upload/all', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT id, code, last_name, first_name, title, email_school, status, upload_year, upload_term, upload_date
+      FROM staff_upload
+      ORDER BY last_name ASC, first_name ASC;
+    `);
+    res.json({ staff: rows });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load staff upload data.' });
+  }
+});
+
+app.post('/api/staff_upload', async (req, res) => {
+  const headers = Array.isArray(req.body?.headers) ? req.body.headers : [];
+  const uploadedRows = Array.isArray(req.body?.staff) ? req.body.staff : [];
+
+  if (headers.length === 0 || uploadedRows.length === 0) {
+    res.status(400).json({ error: 'Missing headers or staff rows.' });
+    return;
+  }
+
+  const uploadYear = Number.isInteger(Number(req.body?.uploadYear)) ? Number(req.body.uploadYear) : null;
+  const uploadTerm = String(req.body?.uploadTerm || '').trim() || null;
+  const uploadDate = parseUploadDate(req.body?.uploadDate);
+
+  const indexLookup = buildIndexLookup(headers);
+  const deduped = new Map();
+  let skippedNoEmail = 0;
+  let duplicateEmails = 0;
+
+  for (const row of uploadedRows) {
+    if (!Array.isArray(row)) continue;
+    const mapped = mapStaffRow(row, indexLookup);
+    const emailKey = String(mapped.email_school || '').trim().toLowerCase();
+
+    if (!emailKey) {
+      skippedNoEmail += 1;
+      continue;
+    }
+
+    if (deduped.has(emailKey)) {
+      duplicateEmails += 1;
+      continue;
+    }
+
+    deduped.set(emailKey, mapped);
+  }
+
+  const records = Array.from(deduped.values());
+
+  try {
+    const result = await withTransaction(async (client) => {
+      let inserted = 0;
+      let updated = 0;
+
+      for (const record of records) {
+        const upsert = await client.query(
+          `
+          INSERT INTO staff_upload (
+            code, last_name, first_name, title, email_school, status, upload_year, upload_term, upload_date, updated_at
+          ) VALUES ($1,$2,$3,$4,$5,'Current',$6,$7,$8,NOW())
+          ON CONFLICT (email_school)
+          DO UPDATE SET
+            code = EXCLUDED.code,
+            last_name = EXCLUDED.last_name,
+            first_name = EXCLUDED.first_name,
+            title = EXCLUDED.title,
+            status = 'Current',
+            upload_year = EXCLUDED.upload_year,
+            upload_term = EXCLUDED.upload_term,
+            upload_date = EXCLUDED.upload_date,
+            updated_at = NOW()
+          RETURNING (xmax = 0) AS inserted;
+          `,
+          [
+            record.code || null,
+            record.last_name || null,
+            record.first_name || null,
+            record.title || null,
+            record.email_school || null,
+            uploadYear,
+            uploadTerm,
+            uploadDate
+          ]
+        );
+
+        if (upsert.rows[0]?.inserted) inserted += 1;
+        else updated += 1;
+      }
+
+      let markedNotCurrent = 0;
+      const uploadedEmails = records.map((r) => String(r.email_school || '').trim().toLowerCase()).filter(Boolean);
+      if (uploadedEmails.length > 0) {
+        const mark = await client.query(
+          `
+          UPDATE staff_upload
+          SET status = 'Not Current', updated_at = NOW()
+          WHERE status <> 'Not Current'
+            AND NOT (lower(email_school) = ANY($1::text[]));
+          `,
+          [uploadedEmails]
+        );
+        markedNotCurrent = mark.rowCount || 0;
+      }
+
+      return { inserted, updated, markedNotCurrent };
+    });
+
+    res.json({
+      success: true,
+      processed: records.length,
+      inserted: result.inserted,
+      updated: result.updated,
+      marked_not_current: result.markedNotCurrent,
+      skipped_no_email: skippedNoEmail,
+      duplicate_emails_in_upload: duplicateEmails,
+      upload_year: uploadYear,
+      upload_term: uploadTerm,
+      upload_date: uploadDate
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to save staff upload data.' });
+  }
+});
+
+app.get('/api/student_upload/all', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT *
+      FROM student_upload
+      ORDER BY student_name ASC NULLS LAST;
+    `);
+    res.json({ students: rows });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load student timetable data.' });
+  }
+});
+
+app.post('/api/student_upload', async (req, res) => {
+  const headers = Array.isArray(req.body?.headers) ? req.body.headers : [];
+  const uploadedRows = Array.isArray(req.body?.students) ? req.body.students : [];
+
+  if (headers.length === 0 || uploadedRows.length === 0) {
+    res.status(400).json({ error: 'Missing headers or student rows.' });
+    return;
+  }
+
+  const uploadYear = Number.isInteger(Number(req.body?.uploadYear)) ? Number(req.body.uploadYear) : null;
+  const uploadTerm = String(req.body?.uploadTerm || '').trim() || null;
+  const uploadDate = parseUploadDate(req.body?.uploadDate);
+
+  const headerMap = buildStudentHeaderMap(headers);
+  const deduped = new Map();
+  let skippedNoIdNumber = 0;
+  let duplicateIdNumbers = 0;
+
+  for (const row of uploadedRows) {
+    if (!Array.isArray(row)) continue;
+    const mapped = mapStudentRow(row, headerMap);
+    const idNumber = String(mapped.id_number || '').trim().toLowerCase();
+
+    if (!idNumber) {
+      skippedNoIdNumber += 1;
+      continue;
+    }
+
+    if (deduped.has(idNumber)) {
+      duplicateIdNumbers += 1;
+      continue;
+    }
+
+    deduped.set(idNumber, mapped);
+  }
+
+  const records = Array.from(deduped.values());
+
+  try {
+    const result = await withTransaction(async (client) => {
+      let inserted = 0;
+      let updated = 0;
+
+      for (const record of records) {
+        const values = [
+          record.student_name || null,
+          record.id_number || null,
+          record.form_class || null,
+          record.year_level || null,
+          ...STUDENT_PERIOD_KEYS.map((key) => record[key] || null),
+          uploadYear,
+          uploadTerm,
+          uploadDate
+        ];
+
+        const upsert = await client.query(
+          `
+          INSERT INTO student_upload (
+            student_name, id_number, form_class, year_level,
+            mon_p1_1, mon_p1_2, mon_p2, mon_i, mon_p3, mon_p4, mon_l, mon_p5,
+            tue_p1_1, tue_p1_2, tue_p2, tue_i, tue_p3, tue_p4, tue_l, tue_p5,
+            wed_p1_1, wed_p1_2, wed_p2, wed_i, wed_p3, wed_p4, wed_l, wed_p5,
+            thu_p1_1, thu_p1_2, thu_p2, thu_i, thu_p3, thu_p4, thu_l, thu_p5,
+            fri_p1_1, fri_p1_2, fri_p2, fri_i, fri_p3, fri_p4, fri_l, fri_p5,
+            status, upload_year, upload_term, upload_date, updated_at
+          ) VALUES (
+            $1, $2, $3, $4,
+            $5, $6, $7, $8, $9, $10, $11, $12,
+            $13, $14, $15, $16, $17, $18, $19, $20,
+            $21, $22, $23, $24, $25, $26, $27, $28,
+            $29, $30, $31, $32, $33, $34, $35, $36,
+            $37, $38, $39, $40, $41, $42, $43, $44,
+            'Current', $45, $46, $47, NOW()
+          )
+          ON CONFLICT (id_number)
+          DO UPDATE SET
+            student_name = EXCLUDED.student_name,
+            form_class = EXCLUDED.form_class,
+            year_level = EXCLUDED.year_level,
+            mon_p1_1 = EXCLUDED.mon_p1_1, mon_p1_2 = EXCLUDED.mon_p1_2, mon_p2 = EXCLUDED.mon_p2, mon_i = EXCLUDED.mon_i,
+            mon_p3 = EXCLUDED.mon_p3, mon_p4 = EXCLUDED.mon_p4, mon_l = EXCLUDED.mon_l, mon_p5 = EXCLUDED.mon_p5,
+            tue_p1_1 = EXCLUDED.tue_p1_1, tue_p1_2 = EXCLUDED.tue_p1_2, tue_p2 = EXCLUDED.tue_p2, tue_i = EXCLUDED.tue_i,
+            tue_p3 = EXCLUDED.tue_p3, tue_p4 = EXCLUDED.tue_p4, tue_l = EXCLUDED.tue_l, tue_p5 = EXCLUDED.tue_p5,
+            wed_p1_1 = EXCLUDED.wed_p1_1, wed_p1_2 = EXCLUDED.wed_p1_2, wed_p2 = EXCLUDED.wed_p2, wed_i = EXCLUDED.wed_i,
+            wed_p3 = EXCLUDED.wed_p3, wed_p4 = EXCLUDED.wed_p4, wed_l = EXCLUDED.wed_l, wed_p5 = EXCLUDED.wed_p5,
+            thu_p1_1 = EXCLUDED.thu_p1_1, thu_p1_2 = EXCLUDED.thu_p1_2, thu_p2 = EXCLUDED.thu_p2, thu_i = EXCLUDED.thu_i,
+            thu_p3 = EXCLUDED.thu_p3, thu_p4 = EXCLUDED.thu_p4, thu_l = EXCLUDED.thu_l, thu_p5 = EXCLUDED.thu_p5,
+            fri_p1_1 = EXCLUDED.fri_p1_1, fri_p1_2 = EXCLUDED.fri_p1_2, fri_p2 = EXCLUDED.fri_p2, fri_i = EXCLUDED.fri_i,
+            fri_p3 = EXCLUDED.fri_p3, fri_p4 = EXCLUDED.fri_p4, fri_l = EXCLUDED.fri_l, fri_p5 = EXCLUDED.fri_p5,
+            status = 'Current',
+            upload_year = EXCLUDED.upload_year,
+            upload_term = EXCLUDED.upload_term,
+            upload_date = EXCLUDED.upload_date,
+            updated_at = NOW()
+          RETURNING (xmax = 0) AS inserted;
+          `,
+          values
+        );
+
+        if (upsert.rows[0]?.inserted) inserted += 1;
+        else updated += 1;
+      }
+
+      let markedNotCurrent = 0;
+      const uploadedIds = records.map((r) => String(r.id_number || '').trim().toLowerCase()).filter(Boolean);
+      if (uploadedIds.length > 0) {
+        const mark = await client.query(
+          `
+          UPDATE student_upload
+          SET status = 'Not Current', updated_at = NOW()
+          WHERE status <> 'Not Current'
+            AND NOT (lower(id_number) = ANY($1::text[]));
+          `,
+          [uploadedIds]
+        );
+        markedNotCurrent = mark.rowCount || 0;
+      }
+
+      return { inserted, updated, markedNotCurrent };
+    });
+
+    res.json({
+      success: true,
+      processed: records.length,
+      inserted: result.inserted,
+      updated: result.updated,
+      marked_not_current: result.markedNotCurrent,
+      skipped_no_id_number: skippedNoIdNumber,
+      duplicate_id_numbers_in_upload: duplicateIdNumbers,
+      upload_year: uploadYear,
+      upload_term: uploadTerm,
+      upload_date: uploadDate
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to save student upload data.' });
+  }
+});
+
+app.get('/api/timetable/all', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT teacher, teacher_name, data, status, upload_year, upload_term, upload_date
+      FROM timetable_upload
+      ORDER BY teacher_name ASC NULLS LAST, teacher ASC;
+    `);
+
+    const timetable = rows.map((row) => {
+      const payload = row.data && typeof row.data === 'object' ? row.data : {};
+      return {
+        ...payload,
+        Teacher: row.teacher,
+        Teacher_Name: row.teacher_name || payload.Teacher_Name || payload.teacher_name || '',
+        status: row.status,
+        upload_year: row.upload_year,
+        upload_term: row.upload_term,
+        upload_date: row.upload_date
+      };
+    });
+
+    res.json({ timetable });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load timetable data.' });
+  }
+});
+
+app.post('/api/upload_timetable', async (req, res) => {
+  const headers = Array.isArray(req.body?.headers) ? req.body.headers : [];
+  const uploadedRows = Array.isArray(req.body?.timetable) ? req.body.timetable : [];
+
+  if (headers.length === 0 || uploadedRows.length === 0) {
+    res.status(400).json({ error: 'Missing headers or timetable rows.' });
+    return;
+  }
+
+  const uploadYear = Number.isInteger(Number(req.body?.uploadYear)) ? Number(req.body.uploadYear) : null;
+  const uploadTerm = String(req.body?.uploadTerm || '').trim() || null;
+  const uploadDate = parseUploadDate(req.body?.uploadDate);
+
+  const deduped = new Map();
+  let skippedNoTeacher = 0;
+  let duplicateTeachers = 0;
+
+  for (const row of uploadedRows) {
+    if (!Array.isArray(row)) continue;
+
+    const mapped = mapTimetableRow(headers, row);
+    const teacher = getTimetableTeacherKey(mapped).toLowerCase();
+
+    if (!teacher) {
+      skippedNoTeacher += 1;
+      continue;
+    }
+
+    if (deduped.has(teacher)) {
+      duplicateTeachers += 1;
+      continue;
+    }
+
+    deduped.set(teacher, {
+      teacher,
+      teacherName: getTimetableTeacherName(mapped),
+      data: mapped
+    });
+  }
+
+  const records = Array.from(deduped.values());
+
+  try {
+    const result = await withTransaction(async (client) => {
+      let inserted = 0;
+      let updated = 0;
+
+      for (const record of records) {
+        const upsert = await client.query(
+          `
+          INSERT INTO timetable_upload (
+            teacher, teacher_name, data, status, upload_year, upload_term, upload_date, updated_at
+          ) VALUES ($1,$2,$3::jsonb,'Current',$4,$5,$6,NOW())
+          ON CONFLICT (teacher)
+          DO UPDATE SET
+            teacher_name = EXCLUDED.teacher_name,
+            data = EXCLUDED.data,
+            status = 'Current',
+            upload_year = EXCLUDED.upload_year,
+            upload_term = EXCLUDED.upload_term,
+            upload_date = EXCLUDED.upload_date,
+            updated_at = NOW()
+          RETURNING (xmax = 0) AS inserted;
+          `,
+          [
+            record.teacher,
+            record.teacherName || null,
+            JSON.stringify(record.data),
+            uploadYear,
+            uploadTerm,
+            uploadDate
+          ]
+        );
+
+        if (upsert.rows[0]?.inserted) inserted += 1;
+        else updated += 1;
+      }
+
+      let markedNotCurrent = 0;
+      const uploadedTeachers = records.map((r) => String(r.teacher || '').trim().toLowerCase()).filter(Boolean);
+      if (uploadedTeachers.length > 0) {
+        const mark = await client.query(
+          `
+          UPDATE timetable_upload
+          SET status = 'Not Current', updated_at = NOW()
+          WHERE status <> 'Not Current'
+            AND NOT (lower(teacher) = ANY($1::text[]));
+          `,
+          [uploadedTeachers]
+        );
+        markedNotCurrent = mark.rowCount || 0;
+      }
+
+      return { inserted, updated, markedNotCurrent };
+    });
+
+    res.json({
+      success: true,
+      processed: records.length,
+      inserted: result.inserted,
+      updated: result.updated,
+      marked_not_current: result.markedNotCurrent,
+      skipped_no_teacher: skippedNoTeacher,
+      duplicate_teachers_in_upload: duplicateTeachers,
+      upload_year: uploadYear,
+      upload_term: uploadTerm,
+      upload_date: uploadDate
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to save timetable upload data.' });
+  }
+});
+
+app.put('/api/upload_timetable/row/:teacherKey', async (req, res) => {
+  const teacherKey = String(req.params.teacherKey || '').trim().toLowerCase();
+  const row = req.body?.row;
+
+  if (!teacherKey || !row || typeof row !== 'object') {
+    res.status(400).json({ success: false, error: 'Missing teacher key or row payload.' });
+    return;
+  }
+
+  const normalizedRow = { ...row, Teacher: teacherKey };
+  const teacherName = getTimetableTeacherName(normalizedRow) || null;
+
+  try {
+    const updated = await pool.query(
+      `
+      UPDATE timetable_upload
+      SET teacher_name = $2,
+          data = $3::jsonb,
+          updated_at = NOW()
+      WHERE lower(teacher) = $1
+      RETURNING teacher, teacher_name, data, status, upload_year, upload_term, upload_date;
+      `,
+      [teacherKey, teacherName, JSON.stringify(normalizedRow)]
+    );
+
+    if (updated.rowCount === 0) {
+      res.status(404).json({ success: false, error: 'Teacher row not found.' });
+      return;
+    }
+
+    const saved = updated.rows[0];
+    res.json({
+      success: true,
+      row: {
+        ...saved.data,
+        Teacher: saved.teacher,
+        Teacher_Name: saved.teacher_name || saved.data.Teacher_Name || saved.data.teacher_name || '',
+        status: saved.status,
+        upload_year: saved.upload_year,
+        upload_term: saved.upload_term,
+        upload_date: saved.upload_date
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to save teacher row.' });
+  }
+});
+
+app.get('/', (_req, res) => {
+  res.redirect('/staff_upload.html');
+});
+
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(500).json({ error: 'Unexpected server error.' });
+});
+
+ensureSchema()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`KamarUploader listening on port ${port}`);
+    });
+  })
+  .catch((error) => {
+    console.error('Failed to initialize database schema:', error.message);
+    process.exit(1);
+  });
