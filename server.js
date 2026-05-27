@@ -56,6 +56,14 @@ const LEGACY_STUDENT_TABLES = [
   'student_timetables'
 ];
 
+const LEGACY_TIMETABLE_TABLES = [
+  'timetable_upload',
+  'upload_timetable',
+  'teacher_timetable_upload',
+  'teacher_timetable',
+  'timetable'
+];
+
 function normalizeKey(value) {
   return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -191,6 +199,95 @@ async function fetchStudentsWithFallback() {
       normalizedRows.sort((a, b) => {
         const aName = String(a.student_name || '').toLowerCase();
         const bName = String(b.student_name || '').toLowerCase();
+        return aName.localeCompare(bName);
+      });
+
+      return normalizedRows;
+    }
+
+    return [];
+  } finally {
+    client.release();
+  }
+}
+
+function normalizeTimetableRecord(row) {
+  const teacher =
+    String(getNormalizedRowValue(row, ['teacher', 'teacher_code', 'teachercode', 'staffcode', 'code']) || '')
+      .trim()
+      .toLowerCase();
+
+  const teacherName = String(
+    getNormalizedRowValue(row, ['teacher_name', 'teachername', 'staffname', 'name']) || ''
+  ).trim();
+
+  const status = String(getNormalizedRowValue(row, ['status']) || 'Current').trim();
+  const uploadYear = getNormalizedRowValue(row, ['upload_year', 'uploadyear']);
+  const uploadTerm = getNormalizedRowValue(row, ['upload_term', 'uploadterm']);
+  const uploadDate = getNormalizedRowValue(row, ['upload_date', 'uploaddate']);
+
+  const dataCandidate = getNormalizedRowValue(row, ['data']);
+  let data = {};
+
+  if (dataCandidate && typeof dataCandidate === 'object' && !Array.isArray(dataCandidate)) {
+    data = dataCandidate;
+  } else {
+    Object.keys(row || {}).forEach((key) => {
+      if (['teacher', 'teacher_name', 'status', 'upload_year', 'upload_term', 'upload_date', 'data'].includes(normalizeKey(key))) {
+        return;
+      }
+      data[key] = row[key];
+    });
+  }
+
+  return {
+    ...data,
+    Teacher: teacher,
+    Teacher_Name: teacherName || String(data.Teacher_Name || data.teacher_name || '').trim(),
+    status,
+    upload_year: uploadYear,
+    upload_term: uploadTerm,
+    upload_date: uploadDate
+  };
+}
+
+async function fetchTimetableWithFallback() {
+  const client = await pool.connect();
+  try {
+    for (const tableName of LEGACY_TIMETABLE_TABLES) {
+      if (!isSafeTableName(tableName)) continue;
+      if (!(await tableExists(client, tableName))) continue;
+
+      if (tableName === 'timetable_upload') {
+        const { rows } = await client.query(`
+          SELECT teacher, teacher_name, data, status, upload_year, upload_term, upload_date
+          FROM timetable_upload
+          ORDER BY teacher_name ASC NULLS LAST, teacher ASC;
+        `);
+
+        if (!rows || rows.length === 0) continue;
+
+        return rows.map((row) => {
+          const payload = row.data && typeof row.data === 'object' ? row.data : {};
+          return {
+            ...payload,
+            Teacher: row.teacher,
+            Teacher_Name: row.teacher_name || payload.Teacher_Name || payload.teacher_name || '',
+            status: row.status,
+            upload_year: row.upload_year,
+            upload_term: row.upload_term,
+            upload_date: row.upload_date
+          };
+        });
+      }
+
+      const { rows } = await client.query(`SELECT * FROM ${tableName};`);
+      if (!rows || rows.length === 0) continue;
+
+      const normalizedRows = rows.map(normalizeTimetableRecord).filter((row) => String(row.Teacher || '').trim());
+      normalizedRows.sort((a, b) => {
+        const aName = String(a.Teacher_Name || '').toLowerCase();
+        const bName = String(b.Teacher_Name || '').toLowerCase();
         return aName.localeCompare(bName);
       });
 
@@ -587,25 +684,7 @@ app.post('/api/student_upload', async (req, res) => {
 
 app.get('/api/timetable/all', async (_req, res) => {
   try {
-    const { rows } = await pool.query(`
-      SELECT teacher, teacher_name, data, status, upload_year, upload_term, upload_date
-      FROM timetable_upload
-      ORDER BY teacher_name ASC NULLS LAST, teacher ASC;
-    `);
-
-    const timetable = rows.map((row) => {
-      const payload = row.data && typeof row.data === 'object' ? row.data : {};
-      return {
-        ...payload,
-        Teacher: row.teacher,
-        Teacher_Name: row.teacher_name || payload.Teacher_Name || payload.teacher_name || '',
-        status: row.status,
-        upload_year: row.upload_year,
-        upload_term: row.upload_term,
-        upload_date: row.upload_date
-      };
-    });
-
+    const timetable = await fetchTimetableWithFallback();
     res.json({ timetable });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load timetable data.' });

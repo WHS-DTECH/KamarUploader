@@ -4,6 +4,15 @@ let timetableRows = [];
 let teacherFilterTerm = '';
 let timetableEditMode = false;
 
+const TIMETABLE_DEFAULT_COLUMNS = [
+  'Teacher',
+  'Teacher_Name',
+  'status',
+  'upload_year',
+  'upload_term',
+  'upload_date'
+];
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -58,11 +67,17 @@ function fetchAndRenderTimetableTable() {
   fetch('/api/timetable/all')
     .then(res => res.json())
     .then(result => {
-      if (result && Array.isArray(result.timetable) && result.timetable.length > 0) {
-        timetableHeaders = Object.keys(result.timetable[0]);
-        timetableRows = sortRowsByTeacherName(result.timetable);
-        renderTimetableTable();
-      }
+      const rows = (result && Array.isArray(result.timetable)) ? result.timetable : [];
+      timetableRows = sortRowsByTeacherName(rows);
+      timetableHeaders = timetableRows.length > 0
+        ? Object.keys(timetableRows[0])
+        : TIMETABLE_DEFAULT_COLUMNS.slice();
+      renderTimetableTable();
+    })
+    .catch(() => {
+      timetableRows = [];
+      timetableHeaders = TIMETABLE_DEFAULT_COLUMNS.slice();
+      renderTimetableTable('Failed to load timetable data.');
     });
 }
 
@@ -216,7 +231,7 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
   reader.readAsText(file);
 });
 
-function renderTimetableTable() {
+function renderTimetableTable(errorMessage) {
   const container = document.getElementById('timetableTableContainer');
   if (!container || !Array.isArray(timetableHeaders) || timetableHeaders.length === 0) return;
 
@@ -249,6 +264,7 @@ function renderTimetableTable() {
         Showing ${filteredRows.length} of ${timetableRows.length} teachers (sorted A-Z by Teacher_Name)
       </div>
     </div>
+    ${errorMessage ? `<div class="error" style="margin-bottom:0.55rem;">${escapeHtml(errorMessage)}</div>` : ''}
     <div style="font-size:0.82rem;color:#64748b;margin-bottom:0.6rem;">
       ${timetableEditMode ? 'Edit mode is ON: click a cell to edit, then click Save row.' : 'Edit mode is OFF.'}
     </div>
@@ -258,6 +274,9 @@ function renderTimetableTable() {
   html += '<th>Actions</th>';
   timetableHeaders.forEach(h => { html += `<th>${escapeHtml(h)}</th>`; });
   html += '</tr></thead><tbody>';
+  if (filteredRows.length === 0) {
+    html += `<tr><td colspan="${timetableHeaders.length + 1}" style="color:#64748b;">No timetable rows found yet.</td></tr>`;
+  }
   filteredRows.forEach(row => {
     const teacherKey = getTeacherKey(row);
     html += '<tr>';
