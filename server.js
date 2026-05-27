@@ -300,6 +300,16 @@ async function fetchTimetableWithFallback() {
   }
 }
 
+function toPositiveIntOrDefault(value, fallback, max) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, max);
+}
+
+function includesText(value, q) {
+  return String(value || '').toLowerCase().includes(String(q || '').toLowerCase());
+}
+
 function mapTimetableRow(headers, row) {
   const mapped = {};
   headers.forEach((header, idx) => {
@@ -688,6 +698,115 @@ app.get('/api/timetable/all', async (_req, res) => {
     res.json({ timetable });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load timetable data.' });
+  }
+});
+
+app.get('/api/feed/staff/current', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const limit = toPositiveIntOrDefault(req.query.limit, 2000, 10000);
+
+    const params = [];
+    let where = "WHERE status = 'Current'";
+
+    if (q) {
+      params.push(`%${q}%`);
+      where += `\n        AND (
+          lower(coalesce(code, '')) LIKE $${params.length}
+          OR lower(coalesce(first_name, '')) LIKE $${params.length}
+          OR lower(coalesce(last_name, '')) LIKE $${params.length}
+          OR lower(coalesce(email_school, '')) LIKE $${params.length}
+        )`;
+    }
+
+    params.push(limit);
+
+    const { rows } = await pool.query(
+      `
+      SELECT id, code, last_name, first_name, title, email_school, status, upload_year, upload_term, upload_date
+      FROM staff_upload
+      ${where}
+      ORDER BY last_name ASC, first_name ASC
+      LIMIT $${params.length};
+      `,
+      params
+    );
+
+    res.json({
+      count: rows.length,
+      filters: { q: q || null, limit },
+      staff: rows
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load current staff feed.' });
+  }
+});
+
+app.get('/api/feed/students/current', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const formClass = String(req.query.form_class || '').trim().toLowerCase();
+    const yearLevel = String(req.query.year_level || '').trim().toLowerCase();
+    const limit = toPositiveIntOrDefault(req.query.limit, 5000, 20000);
+
+    const rows = await fetchStudentsWithFallback();
+    const filtered = rows
+      .filter((row) => String(row.status || 'Current').toLowerCase() === 'current')
+      .filter((row) => {
+        if (!formClass) return true;
+        return String(row.form_class || '').toLowerCase() === formClass;
+      })
+      .filter((row) => {
+        if (!yearLevel) return true;
+        return String(row.year_level || '').toLowerCase() === yearLevel;
+      })
+      .filter((row) => {
+        if (!q) return true;
+        return (
+          includesText(row.student_name, q) ||
+          includesText(row.id_number, q) ||
+          includesText(row.form_class, q)
+        );
+      })
+      .slice(0, limit);
+
+    res.json({
+      count: filtered.length,
+      filters: {
+        q: q || null,
+        form_class: formClass || null,
+        year_level: yearLevel || null,
+        limit
+      },
+      students: filtered
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load current students feed.' });
+  }
+});
+
+app.get('/api/feed/timetable/by-teacher/:teacherKey', async (req, res) => {
+  try {
+    const teacherKey = String(req.params.teacherKey || '').trim().toLowerCase();
+    if (!teacherKey) {
+      res.status(400).json({ error: 'Teacher key is required.' });
+      return;
+    }
+
+    const rows = await fetchTimetableWithFallback();
+    const row = rows.find((item) => String(item.Teacher || item.teacher || '').trim().toLowerCase() === teacherKey);
+
+    if (!row) {
+      res.status(404).json({ error: 'Teacher timetable not found.' });
+      return;
+    }
+
+    res.json({
+      teacher: teacherKey,
+      timetable: row
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load timetable by teacher.' });
   }
 });
 
