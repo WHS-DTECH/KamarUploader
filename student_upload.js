@@ -97,6 +97,46 @@ function hideUploadProgress() {
   if (wrap) wrap.style.display = 'none';
 }
 
+async function syncStudentEmailsFromCsv() {
+  const btn = document.getElementById('syncStudentEmailsBtn');
+  const resultEl = document.getElementById('uploadResult');
+  const originalText = btn ? btn.textContent : 'Sync Student Emails From CSV';
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Syncing emails...';
+  }
+
+  try {
+    const res = await fetch('/api/student_upload/sync-emails', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || !payload.success) {
+      throw new Error(payload.error || 'Could not sync student emails.');
+    }
+
+    if (resultEl) {
+      resultEl.textContent =
+        'Email sync complete. Processed: ' + (payload.processed || 0) +
+        ', Updated: ' + (payload.updated || 0) +
+        ', Not found in student_upload: ' + (payload.not_found_in_student_upload || 0) +
+        ', Skipped (missing fields): ' + (payload.skipped_missing_fields || 0);
+    }
+    fetchAndRenderStudentTable();
+  } catch (err) {
+    if (resultEl) resultEl.textContent = 'Email sync failed: ' + (err.message || err);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+}
+
 function formatDisplayDate(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -231,6 +271,11 @@ window.addEventListener('DOMContentLoaded', function () {
     document.getElementById('studentClassFilter').value = '';
     renderStudentTable();
   });
+
+  const syncBtn = document.getElementById('syncStudentEmailsBtn');
+  if (syncBtn) {
+    syncBtn.addEventListener('click', syncStudentEmailsFromCsv);
+  }
 });
 
 document.getElementById('uploadForm').addEventListener('submit', function(e) {
