@@ -310,6 +310,20 @@ function includesText(value, q) {
   return String(value || '').toLowerCase().includes(String(q || '').toLowerCase());
 }
 
+function getTimetableDataColumns(row) {
+  return Object.keys(row || {}).filter((key) => {
+    const normalized = normalizeKey(key);
+    return ![
+      'teacher',
+      'teachername',
+      'status',
+      'uploadyear',
+      'uploadterm',
+      'uploaddate'
+    ].includes(normalized);
+  });
+}
+
 function mapTimetableRow(headers, row) {
   const mapped = {};
   headers.forEach((header, idx) => {
@@ -807,6 +821,98 @@ app.get('/api/feed/timetable/by-teacher/:teacherKey', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load timetable by teacher.' });
+  }
+});
+
+app.get('/api/feed/timetable/by-class/:classCode', async (req, res) => {
+  try {
+    const classCode = String(req.params.classCode || '').trim().toLowerCase();
+    if (!classCode) {
+      res.status(400).json({ error: 'Class code is required.' });
+      return;
+    }
+
+    const period = String(req.query.period || '').trim();
+    const limit = toPositiveIntOrDefault(req.query.limit, 500, 5000);
+
+    const rows = await fetchTimetableWithFallback();
+    const scopedRows = rows.filter((row) => String(row.status || 'Current').toLowerCase() === 'current');
+    const matches = [];
+
+    for (const row of scopedRows) {
+      const teacher = String(row.Teacher || '').trim();
+      const teacherName = String(row.Teacher_Name || '').trim();
+      const columns = period ? [period] : getTimetableDataColumns(row);
+
+      for (const column of columns) {
+        const value = String(row[column] || '').trim();
+        if (!value) continue;
+        if (!includesText(value, classCode)) continue;
+
+        matches.push({
+          teacher,
+          teacher_name: teacherName,
+          period: column,
+          value,
+          upload_year: row.upload_year || null,
+          upload_term: row.upload_term || null,
+          upload_date: row.upload_date || null
+        });
+
+        if (matches.length >= limit) break;
+      }
+
+      if (matches.length >= limit) break;
+    }
+
+    res.json({
+      class_code: classCode,
+      period: period || null,
+      count: matches.length,
+      limit,
+      matches
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load timetable by class.' });
+  }
+});
+
+app.get('/api/feed/timetable/by-period/:periodKey', async (req, res) => {
+  try {
+    const periodKey = String(req.params.periodKey || '').trim();
+    if (!periodKey) {
+      res.status(400).json({ error: 'Period key is required.' });
+      return;
+    }
+
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const limit = toPositiveIntOrDefault(req.query.limit, 500, 5000);
+
+    const rows = await fetchTimetableWithFallback();
+    const matches = rows
+      .filter((row) => String(row.status || 'Current').toLowerCase() === 'current')
+      .map((row) => ({
+        teacher: String(row.Teacher || '').trim(),
+        teacher_name: String(row.Teacher_Name || '').trim(),
+        period: periodKey,
+        value: String(row[periodKey] || '').trim(),
+        upload_year: row.upload_year || null,
+        upload_term: row.upload_term || null,
+        upload_date: row.upload_date || null
+      }))
+      .filter((item) => item.value)
+      .filter((item) => (q ? includesText(item.value, q) || includesText(item.teacher_name, q) || includesText(item.teacher, q) : true))
+      .slice(0, limit);
+
+    res.json({
+      period: periodKey,
+      q: q || null,
+      count: matches.length,
+      limit,
+      matches
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load timetable by period.' });
   }
 });
 
