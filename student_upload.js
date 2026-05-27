@@ -2,6 +2,7 @@ const DISPLAY_COLUMNS = [
   { key: 'id', label: 'ID' },
   { key: 'student_name', label: 'Student Name' },
   { key: 'id_number', label: 'ID Number' },
+  { key: 'email_school', label: 'Student Email (School)' },
   { key: 'form_class', label: 'Form Class' },
   { key: 'year_level', label: 'Year Level' },
   { key: 'upload_year', label: 'UploadYear' },

@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
@@ -42,11 +43,14 @@ const STUDENT_PERIOD_KEYS = [
 const STUDENT_BASE_KEYS = ['student_name', 'id_number', 'form_class', 'year_level'];
 const STUDENT_KEYS = [...STUDENT_BASE_KEYS, ...STUDENT_PERIOD_KEYS];
 
+const STUDENT_EMAIL_CSV_PATH = path.join(__dirname, 'csv', 'StudentList_email.csv');
+
 const STUDENT_ALIASES = {
   student_name: ['studentname', 'name'],
   id_number: ['idnumber', 'studentid', 'id'],
   form_class: ['formclass', 'form', 'class'],
-  year_level: ['yearlevel', 'year']
+  year_level: ['yearlevel', 'year'],
+  email_school: ['studentemailschool', 'studentemail', 'emailschool', 'email', 'schoolemail']
 };
 
 const LEGACY_STUDENT_TABLES = [
@@ -134,6 +138,122 @@ function mapStudentRow(row, headerMap) {
   return mapped;
 }
 
+function parseCsvLine(line) {
+  const out = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (ch === ',' && !inQuotes) {
+      out.push(current);
+      current = '';
+      continue;
+    }
+
+    current += ch;
+  }
+
+  out.push(current);
+  return out.map((v) => String(v || '').trim());
+}
+
+async function syncStudentEmailsFromCsv(filePath = STUDENT_EMAIL_CSV_PATH) {
+  if (!fs.existsSync(filePath)) {
+    return {
+      file: filePath,
+      found: false,
+      processed: 0,
+      updated: 0,
+      not_found_in_student_upload: 0,
+      skipped_missing_fields: 0
+    };
+  }
+
+  const raw = await fs.promises.readFile(filePath, 'utf8');
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) {
+    return {
+      file: filePath,
+      found: true,
+      processed: 0,
+      updated: 0,
+      not_found_in_student_upload: 0,
+      skipped_missing_fields: 0
+    };
+  }
+
+  const headers = parseCsvLine(lines[0]);
+  const indexLookup = buildIndexLookup(headers);
+  const studentIdIdx = indexLookup.get(normalizeKey('Student ID'));
+  const emailIdx = indexLookup.get(normalizeKey('Student email - School'));
+
+  if (studentIdIdx == null || emailIdx == null) {
+    throw new Error('StudentList_email.csv is missing required headers: Student ID, Student email - School');
+  }
+
+  const updates = new Map();
+  let skippedMissingFields = 0;
+
+  for (const line of lines.slice(1)) {
+    const cols = parseCsvLine(line);
+    const studentId = String(cols[studentIdIdx] || '').trim();
+    const email = String(cols[emailIdx] || '').trim().toLowerCase();
+
+    if (!studentId || !email) {
+      skippedMissingFields += 1;
+      continue;
+    }
+
+    updates.set(studentId, email);
+  }
+
+  const payload = Array.from(updates.entries());
+  let updated = 0;
+  let notFound = 0;
+
+  await withTransaction(async (client) => {
+    for (const [studentId, email] of payload) {
+      const result = await client.query(
+        `
+        UPDATE student_upload
+        SET email_school = $2,
+            updated_at = NOW()
+        WHERE trim(lower(coalesce(id_number, ''))) = trim(lower($1));
+        `,
+        [studentId, email]
+      );
+
+      if ((result.rowCount || 0) > 0) updated += result.rowCount || 0;
+      else notFound += 1;
+    }
+  });
+
+  return {
+    file: filePath,
+    found: true,
+    processed: payload.length,
+    updated,
+    not_found_in_student_upload: notFound,
+    skipped_missing_fields: skippedMissingFields
+  };
+}
+
 function getNormalizedRowValue(row, aliases) {
   const normalizedMap = new Map();
   Object.entries(row || {}).forEach(([key, value]) => {
@@ -172,6 +292,8 @@ function normalizeStudentRecord(row) {
     normalized.form_class || getNormalizedRowValue(row, ['form_class', 'formclass', 'form', 'class']);
   normalized.year_level =
     normalized.year_level || getNormalizedRowValue(row, ['year_level', 'yearlevel', 'year']);
+  normalized.email_school =
+    getNormalizedRowValue(row, ['email_school', 'emailschool', 'student_email_school', 'studentemailschool', 'email']);
 
   return normalized;
 }
@@ -398,6 +520,7 @@ async function ensureSchema() {
       id BIGSERIAL PRIMARY KEY,
       student_name TEXT,
       id_number TEXT UNIQUE,
+      email_school TEXT,
       form_class TEXT,
       year_level TEXT,
       mon_p1_1 TEXT, mon_p1_2 TEXT, mon_p2 TEXT, mon_i TEXT, mon_p3 TEXT, mon_p4 TEXT, mon_l TEXT, mon_p5 TEXT,
@@ -413,6 +536,8 @@ async function ensureSchema() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+
+  await pool.query(`ALTER TABLE student_upload ADD COLUMN IF NOT EXISTS email_school TEXT;`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS timetable_upload (
@@ -565,6 +690,22 @@ app.get('/api/student_upload/all', async (_req, res) => {
     res.json({ students: rows });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load student timetable data.' });
+  }
+});
+
+app.post('/api/student_upload/sync-emails', async (req, res) => {
+  try {
+    const customPath = String(req.body?.filePath || '').trim();
+    const resolvedPath = customPath
+      ? path.isAbsolute(customPath)
+        ? customPath
+        : path.join(__dirname, customPath)
+      : STUDENT_EMAIL_CSV_PATH;
+
+    const result = await syncStudentEmailsFromCsv(resolvedPath);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || 'Failed to sync student emails.' });
   }
 });
 
@@ -1087,7 +1228,18 @@ app.use((err, _req, res, _next) => {
 });
 
 ensureSchema()
-  .then(() => {
+  .then(async () => {
+    try {
+      const syncResult = await syncStudentEmailsFromCsv();
+      if (syncResult.found) {
+        console.log(`Student email sync: processed=${syncResult.processed}, updated=${syncResult.updated}, not_found=${syncResult.not_found_in_student_upload}`);
+      } else {
+        console.log('Student email sync skipped: csv/StudentList_email.csv not found');
+      }
+    } catch (error) {
+      console.warn(`Student email sync warning: ${error.message}`);
+    }
+
     app.listen(port, () => {
       console.log(`KamarUploader listening on port ${port}`);
     });
