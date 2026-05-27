@@ -49,6 +49,13 @@ const STUDENT_ALIASES = {
   year_level: ['yearlevel', 'year']
 };
 
+const LEGACY_STUDENT_TABLES = [
+  'student_upload',
+  'student_timetable_upload',
+  'student_timetable',
+  'student_timetables'
+];
+
 function normalizeKey(value) {
   return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -117,6 +124,83 @@ function mapStudentRow(row, headerMap) {
   }
 
   return mapped;
+}
+
+function getNormalizedRowValue(row, aliases) {
+  const normalizedMap = new Map();
+  Object.entries(row || {}).forEach(([key, value]) => {
+    const normalized = normalizeKey(key);
+    if (normalized && !normalizedMap.has(normalized)) {
+      normalizedMap.set(normalized, value);
+    }
+  });
+
+  for (const alias of aliases) {
+    const hit = normalizedMap.get(normalizeKey(alias));
+    if (hit !== undefined) return hit;
+  }
+
+  return null;
+}
+
+function normalizeStudentRecord(row) {
+  const normalized = {
+    id: getNormalizedRowValue(row, ['id']),
+    status: getNormalizedRowValue(row, ['status']) || 'Current',
+    upload_year: getNormalizedRowValue(row, ['upload_year', 'uploadyear']),
+    upload_term: getNormalizedRowValue(row, ['upload_term', 'uploadterm']),
+    upload_date: getNormalizedRowValue(row, ['upload_date', 'uploaddate'])
+  };
+
+  STUDENT_KEYS.forEach((key) => {
+    normalized[key] = getNormalizedRowValue(row, [key]);
+  });
+
+  normalized.student_name =
+    normalized.student_name || getNormalizedRowValue(row, ['student_name', 'studentname', 'name']);
+  normalized.id_number =
+    normalized.id_number || getNormalizedRowValue(row, ['id_number', 'idnumber', 'studentid', 'id']);
+  normalized.form_class =
+    normalized.form_class || getNormalizedRowValue(row, ['form_class', 'formclass', 'form', 'class']);
+  normalized.year_level =
+    normalized.year_level || getNormalizedRowValue(row, ['year_level', 'yearlevel', 'year']);
+
+  return normalized;
+}
+
+function isSafeTableName(tableName) {
+  return /^[a-z_][a-z0-9_]*$/.test(tableName);
+}
+
+async function tableExists(client, tableName) {
+  const { rows } = await client.query('SELECT to_regclass($1) IS NOT NULL AS exists;', [`public.${tableName}`]);
+  return Boolean(rows[0]?.exists);
+}
+
+async function fetchStudentsWithFallback() {
+  const client = await pool.connect();
+  try {
+    for (const tableName of LEGACY_STUDENT_TABLES) {
+      if (!isSafeTableName(tableName)) continue;
+      if (!(await tableExists(client, tableName))) continue;
+
+      const { rows } = await client.query(`SELECT * FROM ${tableName};`);
+      if (!rows || rows.length === 0) continue;
+
+      const normalizedRows = rows.map(normalizeStudentRecord);
+      normalizedRows.sort((a, b) => {
+        const aName = String(a.student_name || '').toLowerCase();
+        const bName = String(b.student_name || '').toLowerCase();
+        return aName.localeCompare(bName);
+      });
+
+      return normalizedRows;
+    }
+
+    return [];
+  } finally {
+    client.release();
+  }
 }
 
 function mapTimetableRow(headers, row) {
@@ -356,11 +440,7 @@ app.post('/api/staff_upload', async (req, res) => {
 
 app.get('/api/student_upload/all', async (_req, res) => {
   try {
-    const { rows } = await pool.query(`
-      SELECT *
-      FROM student_upload
-      ORDER BY student_name ASC NULLS LAST;
-    `);
+    const rows = await fetchStudentsWithFallback();
     res.json({ students: rows });
   } catch (error) {
     res.status(500).json({ error: 'Failed to load student timetable data.' });
