@@ -4,6 +4,30 @@ let timetableRows = [];
 let teacherFilterTerm = '';
 let timetableEditMode = false;
 
+function guessCurrentTermByMonth(monthIndexZeroBased) {
+  const month = Number(monthIndexZeroBased) + 1;
+  if (month <= 4) return 'Term 1';
+  if (month <= 7) return 'Term 2';
+  if (month <= 9) return 'Term 3';
+  return 'Term 4';
+}
+
+function setDefaultUploadMeta() {
+  const now = new Date();
+  const uploadYearEl = document.getElementById('uploadYear');
+  const uploadTermEl = document.getElementById('uploadTerm');
+  const uploadDateEl = document.getElementById('uploadDate');
+
+  if (uploadYearEl) uploadYearEl.value = String(now.getFullYear());
+  if (uploadTermEl) uploadTermEl.value = guessCurrentTermByMonth(now.getMonth());
+  if (uploadDateEl) {
+    const yyyy = String(now.getFullYear());
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    uploadDateEl.value = `${yyyy}-${mm}-${dd}`;
+  }
+}
+
 const TIMETABLE_DEFAULT_COLUMNS = [
   'Teacher',
   'Teacher_Name',
@@ -163,16 +187,34 @@ function uploadTimetableWithProgress(payload, onProgress) {
 }
 
 // Render timetable table on page load
-window.addEventListener('DOMContentLoaded', fetchAndRenderTimetableTable);
+window.addEventListener('DOMContentLoaded', () => {
+  setDefaultUploadMeta();
+  fetchAndRenderTimetableTable();
+});
 // Timetable CSV Upload & Preview
 
 document.getElementById('uploadForm').addEventListener('submit', function(e) {
   e.preventDefault();
   const fileInput = document.getElementById('csvFile');
   const file = fileInput.files[0];
+  const uploadYear = Number(document.getElementById('uploadYear') && document.getElementById('uploadYear').value);
+  const uploadTerm = String((document.getElementById('uploadTerm') && document.getElementById('uploadTerm').value) || '').trim();
+  const uploadDate = String((document.getElementById('uploadDate') && document.getElementById('uploadDate').value) || '').trim();
   if (!file) return;
   const uploadResult = document.getElementById('uploadResult');
   if (uploadResult) uploadResult.textContent = '';
+  if (!Number.isInteger(uploadYear) || uploadYear < 2000 || uploadYear > 2100) {
+    document.getElementById('uploadResult').textContent = 'Please enter a valid Upload Year.';
+    return;
+  }
+  if (!uploadTerm) {
+    document.getElementById('uploadResult').textContent = 'Please select Upload Term.';
+    return;
+  }
+  if (!uploadDate) {
+    document.getElementById('uploadResult').textContent = 'Please select Upload Date.';
+    return;
+  }
   setUploadProgress('Reading file...', 0);
 
   const reader = new FileReader();
@@ -196,7 +238,7 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
     setUploadProgress(`Uploading ${data.length} rows...`, 45);
 
     uploadTimetableWithProgress(
-      { timetable: data, headers },
+      { timetable: data, headers, uploadYear, uploadTerm, uploadDate },
       (pct) => setUploadProgress(`Uploading ${data.length} rows...`, 45 + (pct * 0.5))
     )
     .then(result => {
@@ -209,7 +251,10 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
           ', Updated: ' + (result.updated || 0) +
           ', Marked Not Current: ' + (result.marked_not_current || 0) +
           ', Skipped (no Teacher): ' + (result.skipped_no_teacher || 0) +
-          ', Duplicate Teachers in upload: ' + (result.duplicate_teachers_in_upload || 0);
+            ', Duplicate Teachers in upload: ' + (result.duplicate_teachers_in_upload || 0) +
+            ', UploadYear: ' + (result.upload_year || '') +
+            ', UploadTerm: ' + (result.upload_term || '') +
+            ', UploadDate: ' + (result.upload_date || '');
       } else if (data.length === 0) {
         document.getElementById('uploadResult').textContent = 'No valid timetable data found in CSV.';
       } else {

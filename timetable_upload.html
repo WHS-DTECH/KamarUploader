@@ -34,6 +34,25 @@
         <form id="uploadForm">
             <label for="csvFile">Upload Timetable CSV File:</label>
             <input type="file" id="csvFile" accept=".csv" required />
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.6rem;margin:0.85rem 0 0.6rem;">
+                <div>
+                    <label for="uploadYear">Upload Year</label>
+                    <input type="number" id="uploadYear" min="2000" max="2100" required />
+                </div>
+                <div>
+                    <label for="uploadTerm">Upload Term</label>
+                    <select id="uploadTerm" required>
+                        <option>Term 1</option>
+                        <option>Term 2</option>
+                        <option>Term 3</option>
+                        <option>Term 4</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="uploadDate">Upload Date</label>
+                    <input type="date" id="uploadDate" required />
+                </div>
+            </div>
             <button type="submit">Upload</button>
         </form>
         <div id="uploadResult" style="margin-top:1.5rem;"></div>
