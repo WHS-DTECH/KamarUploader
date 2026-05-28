@@ -1316,7 +1316,9 @@ ensureSchema()
     try {
       const syncResult = await syncStudentEmailsFromCsv();
       if (syncResult.found) {
-        console.log(`Student email sync: processed=${syncResult.processed}, updated=${syncResult.updated}, not_found=${syncResult.not_found_in_student_upload}`);
+        console.log(
+          `Student email sync: found=true, processed=${syncResult.processed}, updated=${syncResult.updated}, not_found=${syncResult.not_found_in_student_upload}, skipped_missing_fields=${syncResult.skipped_missing_fields}`
+        );
       } else {
         console.log('Student email sync skipped: csv/StudentList_email.csv not found');
       }
