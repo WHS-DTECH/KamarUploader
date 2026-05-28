@@ -586,25 +586,31 @@ app.post('/api/staff_upload', async (req, res) => {
 
   const indexLookup = buildIndexLookup(headers);
   const deduped = new Map();
-  let skippedNoEmail = 0;
+  let skippedNoIdentifier = 0;
+  let duplicateIdentifiers = 0;
   let duplicateEmails = 0;
+  let duplicateCodes = 0;
 
   for (const row of uploadedRows) {
     if (!Array.isArray(row)) continue;
     const mapped = mapStaffRow(row, indexLookup);
     const emailKey = String(mapped.email_school || '').trim().toLowerCase();
+    const codeKey = String(mapped.code || '').trim().toLowerCase();
+    const identifier = emailKey ? `email:${emailKey}` : (codeKey ? `code:${codeKey}` : '');
 
-    if (!emailKey) {
-      skippedNoEmail += 1;
+    if (!identifier) {
+      skippedNoIdentifier += 1;
       continue;
     }
 
-    if (deduped.has(emailKey)) {
-      duplicateEmails += 1;
+    if (deduped.has(identifier)) {
+      duplicateIdentifiers += 1;
+      if (emailKey) duplicateEmails += 1;
+      else duplicateCodes += 1;
       continue;
     }
 
-    deduped.set(emailKey, mapped);
+    deduped.set(identifier, mapped);
   }
 
   const records = Array.from(deduped.values());
@@ -615,51 +621,93 @@ app.post('/api/staff_upload', async (req, res) => {
       let updated = 0;
 
       for (const record of records) {
-        const upsert = await client.query(
-          `
-          INSERT INTO staff_upload (
-            code, last_name, first_name, title, email_school, status, upload_year, upload_term, upload_date, updated_at
-          ) VALUES ($1,$2,$3,$4,$5,'Current',$6,$7,$8,NOW())
-          ON CONFLICT (email_school)
-          DO UPDATE SET
-            code = EXCLUDED.code,
-            last_name = EXCLUDED.last_name,
-            first_name = EXCLUDED.first_name,
-            title = EXCLUDED.title,
-            status = 'Current',
-            upload_year = EXCLUDED.upload_year,
-            upload_term = EXCLUDED.upload_term,
-            upload_date = EXCLUDED.upload_date,
-            updated_at = NOW()
-          RETURNING (xmax = 0) AS inserted;
-          `,
-          [
-            record.code || null,
-            record.last_name || null,
-            record.first_name || null,
-            record.title || null,
-            record.email_school || null,
-            uploadYear,
-            uploadTerm,
-            uploadDate
-          ]
-        );
+        const code = String(record.code || '').trim() || null;
+        const email = String(record.email_school || '').trim().toLowerCase() || null;
 
-        if (upsert.rows[0]?.inserted) inserted += 1;
-        else updated += 1;
+        let existing = null;
+        if (email) {
+          const foundByEmail = await client.query(
+            `SELECT id FROM staff_upload WHERE lower(coalesce(email_school, '')) = $1 LIMIT 1;`,
+            [email]
+          );
+          existing = foundByEmail.rows[0] || null;
+        }
+        if (!existing && code) {
+          const foundByCode = await client.query(
+            `SELECT id FROM staff_upload WHERE lower(coalesce(code, '')) = $1 LIMIT 1;`,
+            [code.toLowerCase()]
+          );
+          existing = foundByCode.rows[0] || null;
+        }
+
+        if (existing) {
+          await client.query(
+            `
+            UPDATE staff_upload
+            SET code = $2,
+                last_name = $3,
+                first_name = $4,
+                title = $5,
+                email_school = COALESCE($6, email_school),
+                status = 'Current',
+                upload_year = $7,
+                upload_term = $8,
+                upload_date = $9,
+                updated_at = NOW()
+            WHERE id = $1;
+            `,
+            [
+              existing.id,
+              code,
+              record.last_name || null,
+              record.first_name || null,
+              record.title || null,
+              email,
+              uploadYear,
+              uploadTerm,
+              uploadDate
+            ]
+          );
+          updated += 1;
+        } else {
+          await client.query(
+            `
+            INSERT INTO staff_upload (
+              code, last_name, first_name, title, email_school, status, upload_year, upload_term, upload_date, updated_at
+            ) VALUES ($1,$2,$3,$4,$5,'Current',$6,$7,$8,NOW());
+            `,
+            [
+              code,
+              record.last_name || null,
+              record.first_name || null,
+              record.title || null,
+              email,
+              uploadYear,
+              uploadTerm,
+              uploadDate
+            ]
+          );
+          inserted += 1;
+        }
       }
 
       let markedNotCurrent = 0;
       const uploadedEmails = records.map((r) => String(r.email_school || '').trim().toLowerCase()).filter(Boolean);
-      if (uploadedEmails.length > 0) {
+      const uploadedCodes = records.map((r) => String(r.code || '').trim().toLowerCase()).filter(Boolean);
+
+      if (uploadedEmails.length > 0 || uploadedCodes.length > 0) {
         const mark = await client.query(
           `
           UPDATE staff_upload
           SET status = 'Not Current', updated_at = NOW()
           WHERE status <> 'Not Current'
-            AND NOT (lower(email_school) = ANY($1::text[]));
+            AND NOT (
+              (lower(coalesce(email_school, '')) <> '' AND lower(email_school) = ANY($1::text[]))
+              OR
+              (lower(coalesce(code, '')) <> '' AND lower(code) = ANY($2::text[]))
+            );
           `,
-          [uploadedEmails]
+          [uploadedEmails, uploadedCodes]
         );
         markedNotCurrent = mark.rowCount || 0;
       }
@@ -673,8 +721,11 @@ app.post('/api/staff_upload', async (req, res) => {
       inserted: result.inserted,
       updated: result.updated,
       marked_not_current: result.markedNotCurrent,
-      skipped_no_email: skippedNoEmail,
+      skipped_no_email: skippedNoIdentifier,
+      skipped_no_identifier: skippedNoIdentifier,
       duplicate_emails_in_upload: duplicateEmails,
+      duplicate_identifiers_in_upload: duplicateIdentifiers,
+      duplicate_codes_in_upload: duplicateCodes,
       upload_year: uploadYear,
       upload_term: uploadTerm,
       upload_date: uploadDate

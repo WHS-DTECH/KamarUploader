@@ -138,6 +138,34 @@ function validateRequiredCsvHeaders(headers) {
   };
 }
 
+function looksLikeHeaderlessStaffRow(row) {
+  if (!Array.isArray(row) || row.length < 4) return false;
+  const code = String(row[0] || '').trim();
+  const lastName = String(row[1] || '').trim();
+  const firstName = String(row[2] || '').trim();
+  const title = String(row[3] || '').trim();
+
+  if (!code || !lastName || !firstName) return false;
+  if (/code|last|first|title|email/i.test(`${code} ${lastName} ${firstName} ${title}`)) return false;
+  if (code.length > 10) return false;
+  return true;
+}
+
+function prepareStaffCsv(rows) {
+  const firstRow = Array.isArray(rows) && rows.length > 0 ? rows[0] : [];
+  const hasHeaderRow = !looksLikeHeaderlessStaffRow(firstRow);
+
+  if (hasHeaderRow) {
+    const headers = firstRow;
+    const data = rows.slice(1).filter(rowArr => rowArr.length >= 4 && rowArr.join() !== headers.join());
+    return { headers, data, inferredHeaders: false };
+  }
+
+  const headers = ['Code', 'Last Name', 'First Name', 'Title', 'Email (School)'];
+  const data = rows.filter(rowArr => Array.isArray(rowArr) && rowArr.length >= 4);
+  return { headers, data, inferredHeaders: true };
+}
+
 function renderStaffUploadTable(rows) {
   const container = document.getElementById('departmentTableContainer');
   if (!container) return;
@@ -203,17 +231,29 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
       hideUploadProgress();
       return;
     }
-    const headers = rows[0];
-    const headerValidation = validateRequiredCsvHeaders(headers);
-    if (!headerValidation.ok) {
+    const prepared = prepareStaffCsv(rows);
+    const headers = prepared.headers;
+    if (!prepared.inferredHeaders) {
+      const headerValidation = validateRequiredCsvHeaders(headers);
+      if (!headerValidation.ok) {
+        document.getElementById('uploadResult').textContent =
+          'CSV is missing required fields: ' + headerValidation.missing.join(', ') +
+          '. Please export again from Kamar with Default Fields and Column Headings enabled.';
+        hideUploadProgress();
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+    }
+
+    const data = prepared.data;
+    if (data.length === 0) {
       document.getElementById('uploadResult').textContent =
-        'CSV is missing required fields: ' + headerValidation.missing.join(', ') +
-        '. Please export again from Kamar with Default Fields and Column Headings enabled.';
+        'CSV file is empty or invalid.';
       hideUploadProgress();
       if (submitBtn) submitBtn.disabled = false;
       return;
     }
-    const data = rows.slice(1).filter(rowArr => rowArr.length === headers.length && rowArr.join() !== headers.join());
+
     setUploadProgress(`Uploading ${data.length} rows...`, 45);
 
     uploadStaffWithProgress(
