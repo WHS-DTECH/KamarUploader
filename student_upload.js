@@ -51,6 +51,16 @@ const DISPLAY_COLUMNS = [
   { key: 'status', label: 'Status' }
 ];
 
+function setDefaultUploadDateToday() {
+  const uploadDateInput = document.getElementById('uploadDate');
+  if (!uploadDateInput) return;
+  const now = new Date();
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  uploadDateInput.value = `${yyyy}-${mm}-${dd}`;
+}
+
 function ensureUploadProgressUi() {
   let wrap = document.getElementById('uploadProgressWrap');
   if (wrap) return wrap;
@@ -252,6 +262,7 @@ function renderStudentTable() {
 
 window.addEventListener('DOMContentLoaded', fetchAndRenderStudentTable);
 window.addEventListener('DOMContentLoaded', function () {
+  setDefaultUploadDateToday();
   const container = document.getElementById('studentTableContainer');
   if (!container) return;
 

@@ -1,4 +1,14 @@
 // Fetch and display the staff_upload table
+function setDefaultUploadDateToday() {
+  const uploadDateInput = document.getElementById('uploadDate');
+  if (!uploadDateInput) return;
+  const now = new Date();
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  uploadDateInput.value = `${yyyy}-${mm}-${dd}`;
+}
+
 function fetchAndRenderStaffUploadTable() {
   fetch('/api/staff_upload/all')
     .then(res => res.json())
@@ -141,7 +151,10 @@ function renderStaffUploadTable(rows) {
 }
 
 // Call on page load
-window.addEventListener('DOMContentLoaded', fetchAndRenderStaffUploadTable);
+window.addEventListener('DOMContentLoaded', () => {
+  setDefaultUploadDateToday();
+  fetchAndRenderStaffUploadTable();
+});
 // Staff CSV Upload & Preview
 document.getElementById('uploadForm').addEventListener('submit', function(e) {
   e.preventDefault();
