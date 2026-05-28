@@ -4,7 +4,7 @@
 
   const links = [
     { href: '/staff_upload.html', label: 'Staff Upload' },
-    { href: '/student_upload.html', label: 'Student Upload' },
+    { href: '/student_upload.html', label: 'Student Timetable' },
     { href: '/timetable_upload.html', label: 'Timetable Upload' }
   ];
 
