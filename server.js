@@ -1057,6 +1057,90 @@ app.get('/api/feed/timetable/by-period/:periodKey', async (req, res) => {
   }
 });
 
+app.get('/api/feed/summary/current-counts', async (_req, res) => {
+  try {
+    const [staffCounts, studentCounts, timetableCounts, staffLatest, studentLatest, timetableLatest] = await Promise.all([
+      pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'Current') AS current_count,
+          COUNT(*) FILTER (WHERE status = 'Not Current') AS not_current_count,
+          COUNT(*) AS total_count
+        FROM staff_upload;
+      `),
+      pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'Current') AS current_count,
+          COUNT(*) FILTER (WHERE status = 'Not Current') AS not_current_count,
+          COUNT(*) AS total_count
+        FROM student_upload;
+      `),
+      pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'Current') AS current_count,
+          COUNT(*) FILTER (WHERE status = 'Not Current') AS not_current_count,
+          COUNT(*) AS total_count
+        FROM timetable_upload;
+      `),
+      pool.query(`
+        SELECT upload_year, upload_term, upload_date, updated_at
+        FROM staff_upload
+        ORDER BY updated_at DESC NULLS LAST
+        LIMIT 1;
+      `),
+      pool.query(`
+        SELECT upload_year, upload_term, upload_date, updated_at
+        FROM student_upload
+        ORDER BY updated_at DESC NULLS LAST
+        LIMIT 1;
+      `),
+      pool.query(`
+        SELECT upload_year, upload_term, upload_date, updated_at
+        FROM timetable_upload
+        ORDER BY updated_at DESC NULLS LAST
+        LIMIT 1;
+      `)
+    ]);
+
+    const safeCounts = (rows) => {
+      const row = rows[0] || {};
+      return {
+        current: Number(row.current_count || 0),
+        not_current: Number(row.not_current_count || 0),
+        total: Number(row.total_count || 0)
+      };
+    };
+
+    const safeLatest = (rows) => {
+      const row = rows[0] || null;
+      if (!row) return null;
+      return {
+        upload_year: row.upload_year,
+        upload_term: row.upload_term,
+        upload_date: row.upload_date,
+        updated_at: row.updated_at
+      };
+    };
+
+    res.json({
+      generated_at: new Date().toISOString(),
+      staff: {
+        counts: safeCounts(staffCounts.rows),
+        latest_upload: safeLatest(staffLatest.rows)
+      },
+      students: {
+        counts: safeCounts(studentCounts.rows),
+        latest_upload: safeLatest(studentLatest.rows)
+      },
+      timetable: {
+        counts: safeCounts(timetableCounts.rows),
+        latest_upload: safeLatest(timetableLatest.rows)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to load upload summary counts.' });
+  }
+});
+
 app.post('/api/upload_timetable', async (req, res) => {
   const headers = Array.isArray(req.body?.headers) ? req.body.headers : [];
   const uploadedRows = Array.isArray(req.body?.timetable) ? req.body.timetable : [];
