@@ -73,6 +73,26 @@
         <div id="currentUserPanel" class="current-user-panel">Not signed in.</div>
       </article>
     </section>
+
+    <section class="project-links-panel" aria-label="WHS Projects">
+      <div class="project-links-header">
+        <div>
+          <h2>WHS Projects Using Kamar Data</h2>
+          <p>Quick links to projects that depend on this uploader data.</p>
+        </div>
+      </div>
+
+      <form id="projectLinkForm" class="project-link-form" style="display:none;">
+        <label for="projectSiteName">Site Name</label>
+        <input id="projectSiteName" type="text" placeholder="e.g. Food Room" maxlength="120" required />
+        <label for="projectSiteUrl">Site URL</label>
+        <input id="projectSiteUrl" type="url" placeholder="https://example.onrender.com" required />
+        <button type="submit" class="subtle-btn">Add Link</button>
+      </form>
+
+      <div id="projectLinkStatus" class="project-link-status" style="display:none;"></div>
+      <div id="projectLinksList" class="project-links-list"></div>
+    </section>
   </main>
 
   <script src="https://accounts.google.com/gsi/client" async defer></script>

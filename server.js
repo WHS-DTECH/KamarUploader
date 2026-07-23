@@ -618,6 +618,19 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function normalizeProjectUrl(rawUrl) {
+  const text = String(rawUrl || '').trim();
+  if (!text) return null;
+
+  try {
+    const parsed = new URL(text);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+    return parsed.toString();
+  } catch (_err) {
+    return null;
+  }
+}
+
 function getTimetableDataColumns(row) {
   return Object.keys(row || {}).filter((key) => {
     const normalized = normalizeKey(key);
@@ -787,6 +800,17 @@ async function ensureSchema() {
       student_timetable BOOLEAN NOT NULL DEFAULT FALSE,
       staff_timetable BOOLEAN NOT NULL DEFAULT FALSE,
       admin_menu BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_project_links (
+      id BIGSERIAL PRIMARY KEY,
+      site_name TEXT NOT NULL,
+      site_url TEXT NOT NULL,
+      created_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
@@ -1172,6 +1196,71 @@ app.post('/api/permissions/reset', requireSession, requireAdmin, async (_req, re
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to reset permissions.' });
+  }
+});
+
+app.get('/api/projects/links', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT id, site_name, site_url, created_by, created_at, updated_at
+      FROM app_project_links
+      ORDER BY lower(site_name) ASC, id ASC;
+      `
+    );
+    res.json({ success: true, links: rows });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to load project links.' });
+  }
+});
+
+app.post('/api/projects/links', requireSession, requireAdmin, async (req, res) => {
+  try {
+    const siteName = String(req.body?.site_name || '').trim();
+    const siteUrl = normalizeProjectUrl(req.body?.site_url);
+    const createdBy = String(req.sessionUser?.email || '').trim().toLowerCase() || null;
+
+    if (!siteName) {
+      res.status(400).json({ success: false, error: 'Site name is required.' });
+      return;
+    }
+    if (!siteUrl) {
+      res.status(400).json({ success: false, error: 'Provide a valid URL starting with http:// or https://.' });
+      return;
+    }
+
+    const { rows } = await pool.query(
+      `
+      INSERT INTO app_project_links (site_name, site_url, created_by, updated_at)
+      VALUES ($1, $2, $3, NOW())
+      RETURNING id, site_name, site_url, created_by, created_at, updated_at;
+      `,
+      [siteName, siteUrl, createdBy]
+    );
+
+    res.json({ success: true, link: rows[0] || null });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to add project link.' });
+  }
+});
+
+app.delete('/api/projects/links/:id', requireSession, requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ success: false, error: 'Invalid link id.' });
+      return;
+    }
+
+    const result = await pool.query('DELETE FROM app_project_links WHERE id = $1;', [id]);
+    if ((result.rowCount || 0) === 0) {
+      res.status(404).json({ success: false, error: 'Project link not found.' });
+      return;
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to delete project link.' });
   }
 });
 

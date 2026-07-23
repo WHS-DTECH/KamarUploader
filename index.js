@@ -14,6 +14,134 @@ function safeText(value) {
     .replace(/'/g, '&#039;');
 }
 
+let currentAuthUser = null;
+
+function isAdminUser(user) {
+  return Boolean(user && user.email && String(user.role || '').trim().toLowerCase() === 'admin');
+}
+
+function showProjectLinkStatus(message, isError) {
+  const statusEl = document.getElementById('projectLinkStatus');
+  if (!statusEl) return;
+  statusEl.textContent = message;
+  statusEl.className = `project-link-status ${isError ? 'err' : 'ok'}`;
+  statusEl.style.display = message ? 'block' : 'none';
+}
+
+function applyProjectLinkEditorVisibility() {
+  const form = document.getElementById('projectLinkForm');
+  if (!form) return;
+  form.style.display = isAdminUser(currentAuthUser) ? 'grid' : 'none';
+}
+
+function renderProjectLinks(links) {
+  const listEl = document.getElementById('projectLinksList');
+  if (!listEl) return;
+
+  const rows = Array.isArray(links) ? links : [];
+  if (!rows.length) {
+    listEl.innerHTML = '<div class="project-link-card">No linked projects yet.</div>';
+    return;
+  }
+
+  const adminEnabled = isAdminUser(currentAuthUser);
+  listEl.innerHTML = rows.map((row) => {
+    const name = safeText(row.site_name || 'Project');
+    const url = safeText(row.site_url || '');
+    const id = Number(row.id || 0);
+    return `
+      <article class="project-link-card">
+        <p class="project-link-card-title">${name}</p>
+        <a class="project-link-card-url" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>
+        ${adminEnabled ? `<div class="project-link-card-actions"><button type="button" class="project-link-delete" data-project-id="${id}">Remove</button></div>` : ''}
+      </article>
+    `;
+  }).join('');
+
+  if (adminEnabled) {
+    Array.from(document.querySelectorAll('.project-link-delete')).forEach((button) => {
+      button.addEventListener('click', async () => {
+        const projectId = Number(button.dataset.projectId || 0);
+        if (!Number.isInteger(projectId) || projectId <= 0) return;
+        if (!confirm('Remove this project link?')) return;
+        await deleteProjectLink(projectId);
+      });
+    });
+  }
+}
+
+async function loadProjectLinks() {
+  try {
+    const res = await fetch('/api/projects/links');
+    const payload = await res.json();
+    if (!res.ok || !payload.success) {
+      throw new Error(payload.error || 'Failed to load project links.');
+    }
+    renderProjectLinks(payload.links || []);
+  } catch (err) {
+    renderProjectLinks([]);
+    showProjectLinkStatus(err.message || 'Failed to load project links.', true);
+  }
+}
+
+async function addProjectLink(siteName, siteUrl) {
+  try {
+    const res = await fetch('/api/projects/links', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ site_name: siteName, site_url: siteUrl })
+    });
+    const payload = await res.json();
+    if (!res.ok || !payload.success) {
+      throw new Error(payload.error || 'Failed to add project link.');
+    }
+
+    showProjectLinkStatus('Project link added.', false);
+    await loadProjectLinks();
+    return true;
+  } catch (err) {
+    showProjectLinkStatus(err.message || 'Failed to add project link.', true);
+    return false;
+  }
+}
+
+async function deleteProjectLink(projectId) {
+  try {
+    const res = await fetch(`/api/projects/links/${projectId}`, { method: 'DELETE' });
+    const payload = await res.json();
+    if (!res.ok || !payload.success) {
+      throw new Error(payload.error || 'Failed to remove project link.');
+    }
+    showProjectLinkStatus('Project link removed.', false);
+    await loadProjectLinks();
+  } catch (err) {
+    showProjectLinkStatus(err.message || 'Failed to remove project link.', true);
+  }
+}
+
+function initProjectLinksForm() {
+  const form = document.getElementById('projectLinkForm');
+  const nameInput = document.getElementById('projectSiteName');
+  const urlInput = document.getElementById('projectSiteUrl');
+  if (!form || !nameInput || !urlInput) return;
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const siteName = String(nameInput.value || '').trim();
+    const siteUrl = String(urlInput.value || '').trim();
+    if (!siteName || !siteUrl) {
+      showProjectLinkStatus('Enter both site name and URL.', true);
+      return;
+    }
+
+    const ok = await addProjectLink(siteName, siteUrl);
+    if (ok) {
+      nameInput.value = '';
+      urlInput.value = '';
+    }
+  });
+}
+
 function updateStatCard(prefix, item) {
   const currentEl = document.getElementById(`${prefix}Current`);
   const metaEl = document.getElementById(`${prefix}Meta`);
@@ -104,20 +232,30 @@ async function bootstrapExistingSession() {
     if (!res.ok) {
       localStorage.removeItem('kamarAuthUser');
       renderUserPanel(null);
-      return;
+      currentAuthUser = null;
+      applyProjectLinkEditorVisibility();
+      return null;
     }
 
     const payload = await res.json();
     if (!payload.success || !payload.user) {
       localStorage.removeItem('kamarAuthUser');
       renderUserPanel(null);
-      return;
+      currentAuthUser = null;
+      applyProjectLinkEditorVisibility();
+      return null;
     }
 
     persistSessionUser(payload.user);
     renderUserPanel(payload.user);
+    currentAuthUser = payload.user;
+    applyProjectLinkEditorVisibility();
+    return payload.user;
   } catch (_err) {
     renderUserPanel(null, 'Could not confirm session.');
+    currentAuthUser = null;
+    applyProjectLinkEditorVisibility();
+    return null;
   }
 }
 
@@ -142,9 +280,14 @@ async function handleGoogleCredentialResponse(response) {
 
     persistSessionUser(payload.user);
     renderUserPanel(payload.user, 'Google sign-in complete.');
+    currentAuthUser = payload.user;
+    applyProjectLinkEditorVisibility();
+    await loadProjectLinks();
   } catch (err) {
     localStorage.removeItem('kamarAuthUser');
     renderUserPanel(null, err.message || 'Google sign-in failed.');
+    currentAuthUser = null;
+    applyProjectLinkEditorVisibility();
   }
 }
 
@@ -188,6 +331,9 @@ async function initGoogleSignIn() {
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
+  initProjectLinksForm();
+  applyProjectLinkEditorVisibility();
+  await loadProjectLinks();
   await loadDashboardStats();
   await bootstrapExistingSession();
   await initGoogleSignIn();
@@ -206,7 +352,10 @@ window.addEventListener('DOMContentLoaded', async () => {
       sessionStorage.removeItem('navbar_user_role');
       window.dispatchEvent(new Event('kamar-auth-changed'));
       renderUserPanel(null, 'Signed out.');
+      currentAuthUser = null;
+      applyProjectLinkEditorVisibility();
       await initGoogleSignIn();
+      await loadProjectLinks();
     });
   }
 });
