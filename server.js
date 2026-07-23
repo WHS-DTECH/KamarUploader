@@ -27,7 +27,7 @@ app.use(express.static(path.join(__dirname)));
 
 const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || '').trim();
 const GOOGLE_ALLOWED_DOMAIN = String(process.env.GOOGLE_ALLOWED_DOMAIN || 'westlandhigh.school.nz').trim().toLowerCase();
-const INITIAL_ADMIN_EMAIL = String(process.env.INITIAL_ADMIN_EMAIL || '').trim().toLowerCase();
+const INITIAL_ADMIN_EMAIL = String(process.env.INITIAL_ADMIN_EMAIL || 'vanessapringle@westlandhigh.school.nz').trim().toLowerCase();
 const SESSION_COOKIE_NAME = 'kamar_auth';
 const AUTH_SESSION_SECRET = String(process.env.AUTH_SESSION_SECRET || '').trim() || crypto.randomBytes(32).toString('hex');
 const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 12;

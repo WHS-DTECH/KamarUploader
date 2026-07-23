@@ -21,12 +21,20 @@ function updateStatCard(prefix, item) {
 
   const counts = (item && item.counts) || {};
   const latest = (item && item.latest_upload) || {};
-  currentEl.textContent = String(Number(counts.current || 0));
+  const hideCount = prefix === 'timetable';
+  currentEl.style.display = hideCount ? 'none' : '';
+  if (!hideCount) {
+    currentEl.textContent = String(Number(counts.current || 0));
+  }
 
   const uploadYear = latest.upload_year != null ? latest.upload_year : '-';
   const uploadTerm = latest.upload_term || '-';
   const uploadDate = formatDatePart(latest.upload_date);
-  metaEl.textContent = `Total: ${Number(counts.total || 0)} | Last upload: ${uploadYear} ${uploadTerm} (${uploadDate})`;
+  if (hideCount) {
+    metaEl.textContent = `Last upload: ${uploadYear} ${uploadTerm} (${uploadDate})`;
+  } else {
+    metaEl.textContent = `Total: ${Number(counts.total || 0)} | Last upload: ${uploadYear} ${uploadTerm} (${uploadDate})`;
+  }
 }
 
 async function loadDashboardStats() {
