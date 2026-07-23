@@ -11,6 +11,7 @@
   ];
 
   const adminLinks = [
+    { href: '/admin_site_audit.html', label: 'Subject Site Audit' },
     { href: '/admin_user_roles.html', label: 'User Role Management' },
     { href: '/admin_permissions.html', label: 'Role Permissions' }
   ];
@@ -20,6 +21,7 @@
     '/student_details_upload.html': 'student_upload',
     '/student_upload.html': 'student_timetable',
     '/timetable_upload.html': 'staff_timetable',
+    '/admin_site_audit.html': 'admin_menu',
     '/admin_user_roles.html': 'admin_menu',
     '/admin_permissions.html': 'admin_menu'
   };

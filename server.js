@@ -815,6 +815,23 @@ async function ensureSchema() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_subject_site_audit (
+      id BIGSERIAL PRIMARY KEY,
+      subject_name TEXT NOT NULL,
+      teacher_name TEXT,
+      site_url TEXT,
+      site_status TEXT NOT NULL DEFAULT 'not_started',
+      homepage_ready BOOLEAN NOT NULL DEFAULT FALSE,
+      standards_ready BOOLEAN NOT NULL DEFAULT FALSE,
+      resources_ready BOOLEAN NOT NULL DEFAULT FALSE,
+      notes TEXT,
+      created_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
   await withTransaction(async (client) => {
     for (const role of MANAGED_ROLES) {
       await client.query(
@@ -1261,6 +1278,188 @@ app.delete('/api/projects/links/:id', requireSession, requireAdmin, async (req, 
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to delete project link.' });
+  }
+});
+
+app.get('/api/site-audit', requireSession, requireAdmin, async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        id,
+        subject_name,
+        teacher_name,
+        site_url,
+        site_status,
+        homepage_ready,
+        standards_ready,
+        resources_ready,
+        notes,
+        created_by,
+        created_at,
+        updated_at
+      FROM app_subject_site_audit
+      ORDER BY lower(subject_name) ASC, id ASC;
+      `
+    );
+
+    const summary = rows.reduce(
+      (acc, row) => {
+        acc.total += 1;
+        const status = String(row.site_status || '').trim().toLowerCase();
+        if (status === 'live') acc.live += 1;
+        else if (status === 'in_progress') acc.in_progress += 1;
+        else acc.not_started += 1;
+        return acc;
+      },
+      { total: 0, live: 0, in_progress: 0, not_started: 0 }
+    );
+
+    res.json({ success: true, rows, summary });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to load subject site audit.' });
+  }
+});
+
+app.post('/api/site-audit', requireSession, requireAdmin, async (req, res) => {
+  try {
+    const subjectName = String(req.body?.subject_name || '').trim();
+    const teacherName = String(req.body?.teacher_name || '').trim() || null;
+    const siteUrl = req.body?.site_url ? normalizeProjectUrl(req.body.site_url) : null;
+    const siteStatus = String(req.body?.site_status || 'not_started').trim().toLowerCase();
+    const notes = String(req.body?.notes || '').trim() || null;
+    const createdBy = String(req.sessionUser?.email || '').trim().toLowerCase() || null;
+
+    if (!subjectName) {
+      res.status(400).json({ success: false, error: 'Subject name is required.' });
+      return;
+    }
+    if (req.body?.site_url && !siteUrl) {
+      res.status(400).json({ success: false, error: 'Provide a valid site URL starting with http:// or https://.' });
+      return;
+    }
+    if (!['not_started', 'in_progress', 'live'].includes(siteStatus)) {
+      res.status(400).json({ success: false, error: 'Invalid site status.' });
+      return;
+    }
+
+    const { rows } = await pool.query(
+      `
+      INSERT INTO app_subject_site_audit (
+        subject_name,
+        teacher_name,
+        site_url,
+        site_status,
+        homepage_ready,
+        standards_ready,
+        resources_ready,
+        notes,
+        created_by,
+        updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+      RETURNING *;
+      `,
+      [
+        subjectName,
+        teacherName,
+        siteUrl,
+        siteStatus,
+        Boolean(req.body?.homepage_ready),
+        Boolean(req.body?.standards_ready),
+        Boolean(req.body?.resources_ready),
+        notes,
+        createdBy
+      ]
+    );
+
+    res.json({ success: true, row: rows[0] || null });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to add subject site audit row.' });
+  }
+});
+
+app.put('/api/site-audit/:id', requireSession, requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const subjectName = String(req.body?.subject_name || '').trim();
+    const teacherName = String(req.body?.teacher_name || '').trim() || null;
+    const siteUrl = req.body?.site_url ? normalizeProjectUrl(req.body.site_url) : null;
+    const siteStatus = String(req.body?.site_status || 'not_started').trim().toLowerCase();
+    const notes = String(req.body?.notes || '').trim() || null;
+
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ success: false, error: 'Invalid audit row id.' });
+      return;
+    }
+    if (!subjectName) {
+      res.status(400).json({ success: false, error: 'Subject name is required.' });
+      return;
+    }
+    if (req.body?.site_url && !siteUrl) {
+      res.status(400).json({ success: false, error: 'Provide a valid site URL starting with http:// or https://.' });
+      return;
+    }
+    if (!['not_started', 'in_progress', 'live'].includes(siteStatus)) {
+      res.status(400).json({ success: false, error: 'Invalid site status.' });
+      return;
+    }
+
+    const result = await pool.query(
+      `
+      UPDATE app_subject_site_audit
+      SET subject_name = $2,
+          teacher_name = $3,
+          site_url = $4,
+          site_status = $5,
+          homepage_ready = $6,
+          standards_ready = $7,
+          resources_ready = $8,
+          notes = $9,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING *;
+      `,
+      [
+        id,
+        subjectName,
+        teacherName,
+        siteUrl,
+        siteStatus,
+        Boolean(req.body?.homepage_ready),
+        Boolean(req.body?.standards_ready),
+        Boolean(req.body?.resources_ready),
+        notes
+      ]
+    );
+
+    if ((result.rowCount || 0) === 0) {
+      res.status(404).json({ success: false, error: 'Audit row not found.' });
+      return;
+    }
+
+    res.json({ success: true, row: result.rows[0] || null });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to update subject site audit row.' });
+  }
+});
+
+app.delete('/api/site-audit/:id', requireSession, requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ success: false, error: 'Invalid audit row id.' });
+      return;
+    }
+
+    const result = await pool.query('DELETE FROM app_subject_site_audit WHERE id = $1;', [id]);
+    if ((result.rowCount || 0) === 0) {
+      res.status(404).json({ success: false, error: 'Audit row not found.' });
+      return;
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to delete audit row.' });
   }
 });
 

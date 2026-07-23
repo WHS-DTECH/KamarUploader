@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Subject Site Audit</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    body {
+      font-family: 'Manrope', 'Segoe UI', sans-serif;
+      background: #f5f5f5;
+      margin: 0;
+      padding: 20px;
+    }
+    .audit-shell {
+      max-width: 1280px;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      padding: 1.6rem;
+    }
+    .audit-header {
+      display: flex;
+      align-items: center;
+      gap: 0.8rem;
+      flex-wrap: wrap;
+      margin-bottom: 1rem;
+    }
+    .audit-nav {
+      display: inline-block;
+      text-decoration: none;
+      background: #1d4f91;
+      color: #fff;
+      border-radius: 8px;
+      padding: 0.5rem 0.8rem;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+    .audit-nav.back { background: #666; }
+    .audit-nav.back:hover { background: #555; }
+    .audit-nav:hover { background: #143c70; }
+    .audit-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    .audit-card {
+      border: 1px solid #d9e4f2;
+      border-radius: 10px;
+      background: #f8fbff;
+      padding: 0.85rem 0.95rem;
+    }
+    .audit-card h2 {
+      margin: 0;
+      font-size: 0.9rem;
+      color: #31506b;
+    }
+    .audit-card p {
+      margin: 0.35rem 0 0;
+      font-size: 1.8rem;
+      font-weight: 800;
+      color: #16384f;
+    }
+    .audit-grid {
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      gap: 1rem;
+    }
+    .audit-panel {
+      border: 1px solid #d9e4f2;
+      border-radius: 10px;
+      background: #f8fbff;
+      padding: 1rem;
+    }
+    .audit-panel h2 {
+      margin: 0 0 0.7rem;
+      color: #1f4d83;
+    }
+    .audit-panel label {
+      display: block;
+      margin: 0.5rem 0 0.25rem;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+    .audit-panel input,
+    .audit-panel select,
+    .audit-panel textarea {
+      width: 100%;
+      padding: 0.55rem;
+      border: 1px solid #c8d6ea;
+      border-radius: 8px;
+      font-size: 0.92rem;
+      background: #fff;
+    }
+    .audit-panel textarea {
+      min-height: 120px;
+      resize: vertical;
+    }
+    .audit-checks {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.5rem;
+      margin-top: 0.65rem;
+    }
+    .audit-check {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.88rem;
+      background: #fff;
+      border: 1px solid #d9e4f2;
+      border-radius: 8px;
+      padding: 0.55rem 0.6rem;
+    }
+    .audit-check input { width: auto; }
+    .audit-actions {
+      display: flex;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      margin-top: 0.85rem;
+    }
+    .audit-btn {
+      border: none;
+      border-radius: 8px;
+      padding: 0.55rem 0.85rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .audit-btn.save { background: #1e9b4f; color: #fff; }
+    .audit-btn.reset { background: #94a3b8; color: #fff; }
+    .audit-status {
+      display: none;
+      margin-top: 0.7rem;
+      padding: 0.6rem 0.7rem;
+      border-radius: 8px;
+      font-size: 0.9rem;
+    }
+    .audit-status.ok { background: #dff5e6; color: #0f5132; }
+    .audit-status.err { background: #f8d7da; color: #842029; }
+    .audit-table-wrap { overflow: auto; }
+    .audit-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+    }
+    .audit-table th,
+    .audit-table td {
+      border: 1px solid #d9e4f2;
+      padding: 0.55rem;
+      vertical-align: top;
+      font-size: 0.9rem;
+      text-align: left;
+    }
+    .audit-table th { background: #eef4fd; }
+    .status-pill {
+      display: inline-flex;
+      padding: 0.18rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 800;
+    }
+    .status-live { background: #dcfce7; color: #166534; }
+    .status-in-progress { background: #fef3c7; color: #92400e; }
+    .status-not-started { background: #e2e8f0; color: #334155; }
+    .audit-link {
+      color: #0d5381;
+      word-break: break-all;
+    }
+    .row-actions {
+      display: flex;
+      gap: 0.45rem;
+      flex-wrap: wrap;
+    }
+    .row-btn {
+      border: none;
+      border-radius: 8px;
+      padding: 0.4rem 0.6rem;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .row-btn.edit { background: #1d4f91; color: #fff; }
+    .row-btn.delete { background: #c43030; color: #fff; }
+    @media (max-width: 1060px) {
+      .audit-grid { grid-template-columns: 1fr; }
+      .audit-summary { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+    }
+    @media (max-width: 700px) {
+      .audit-summary { grid-template-columns: 1fr; }
+      .audit-checks { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div id="navbar-include"></div>
+  <script src="shared/navbar_loader.js"></script>
+
+  <div class="audit-shell">
+    <div class="audit-header">
+      <a href="/" class="audit-nav back">← Back to Home</a>
+      <a href="/admin_user_roles.html" class="audit-nav">User Role Management</a>
+      <a href="/admin_permissions.html" class="audit-nav">Role Permissions</a>
+      <h1 style="margin:0;">Subject Site Audit</h1>
+    </div>
+    <p style="margin:0 0 1rem;color:#4a5568;">Track which subject Google Sites are live, still being built, or not started yet. Use this to keep the Textiles-style rebuild work visible and manageable.</p>
+
+    <section class="audit-summary">
+      <article class="audit-card"><h2>Total Subjects</h2><p id="summaryTotal">0</p></article>
+      <article class="audit-card"><h2>Live</h2><p id="summaryLive">0</p></article>
+      <article class="audit-card"><h2>In Progress</h2><p id="summaryInProgress">0</p></article>
+      <article class="audit-card"><h2>Not Started</h2><p id="summaryNotStarted">0</p></article>
+    </section>
+
+    <section class="audit-grid">
+      <div class="audit-panel">
+        <h2 id="auditFormTitle">Add Subject Site</h2>
+        <input id="auditRowId" type="hidden" />
+
+        <label for="subjectName">Subject Name</label>
+        <input id="subjectName" type="text" maxlength="120" placeholder="e.g. Woodwork & Furniture" required />
+
+        <label for="teacherName">Teacher</label>
+        <input id="teacherName" type="text" maxlength="120" placeholder="e.g. Mr Ram" />
+
+        <label for="siteUrl">Google Site URL</label>
+        <input id="siteUrl" type="url" placeholder="https://sites.google.com/..." />
+
+        <label for="siteStatus">Build Status</label>
+        <select id="siteStatus">
+          <option value="not_started">Not started</option>
+          <option value="in_progress">In progress</option>
+          <option value="live">Live</option>
+        </select>
+
+        <div class="audit-checks">
+          <label class="audit-check"><input id="homepageReady" type="checkbox" /> Homepage ready</label>
+          <label class="audit-check"><input id="standardsReady" type="checkbox" /> Standards ready</label>
+          <label class="audit-check"><input id="resourcesReady" type="checkbox" /> Resources/resources ready</label>
+        </div>
+
+        <label for="siteNotes">Notes</label>
+        <textarea id="siteNotes" placeholder="What is missing? What still needs to be built? Any notes about images, standards, or pages?"></textarea>
+
+        <div class="audit-actions">
+          <button id="saveAuditBtn" type="button" class="audit-btn save">Save Subject Site</button>
+          <button id="resetAuditBtn" type="button" class="audit-btn reset">Clear Form</button>
+        </div>
+
+        <div id="auditStatus" class="audit-status"></div>
+      </div>
+
+      <div class="audit-panel audit-table-wrap">
+        <h2>Current Audit</h2>
+        <table class="audit-table">
+          <thead>
+            <tr>
+              <th>Subject</th>
+              <th>Status</th>
+              <th>Sections</th>
+              <th>Site</th>
+              <th>Notes</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="auditTableBody">
+            <tr><td colspan="6">Loading audit...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script src="admin_site_audit.js"></script>
+</body>
+</html>
