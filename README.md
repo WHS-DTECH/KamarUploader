@@ -28,6 +28,7 @@ Create a `.env` file locally or set environment variables in Render:
 - `GOOGLE_CLIENT_ID` (optional, required for Google Login)
 - `GOOGLE_ALLOWED_DOMAIN` (optional, defaults to `westlandhigh.school.nz`)
 - `AUTH_SESSION_SECRET` (optional but strongly recommended for stable signed sessions)
+- `INITIAL_ADMIN_EMAIL` (optional bootstrap admin account for first login)
 
 Example:
 
@@ -37,6 +38,7 @@ PORT=10000
 GOOGLE_CLIENT_ID=your-google-oauth-client-id.apps.googleusercontent.com
 GOOGLE_ALLOWED_DOMAIN=westlandhigh.school.nz
 AUTH_SESSION_SECRET=replace-with-a-long-random-secret
+INITIAL_ADMIN_EMAIL=your.name@westlandhigh.school.nz
 ```
 
 ## Local run
@@ -82,6 +84,7 @@ npm start
 3. Set `GOOGLE_CLIENT_ID` on the server.
 4. Set `GOOGLE_ALLOWED_DOMAIN` to your school domain if you want domain-restricted sign-in.
 5. Set `AUTH_SESSION_SECRET` to a long random value (at least 32 chars).
+6. Optional: set `INITIAL_ADMIN_EMAIL` to seed your first Admin role, then manage roles in Admin menu.
 
 ## Render deployment notes
 
