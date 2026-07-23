@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="style.css">
     <style>
         body {
-            font-family: 'Lexend', sans-serif;
+            font-family: 'Manrope', 'Segoe UI', sans-serif;
             background-color: #f5f5f5;
             margin: 0;
             padding: 20px;
@@ -15,7 +15,7 @@
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            background: white;
+            background: #fff;
             padding: 2rem;
             border-radius: 8px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
@@ -24,20 +24,23 @@
             display: flex;
             align-items: center;
             margin-bottom: 2rem;
-            gap: 1rem;
+            gap: 0.8rem;
+            flex-wrap: wrap;
         }
-        .back-btn {
+        .back-btn,
+        .nav-btn {
             display: inline-block;
             padding: 0.5rem 1rem;
-            background: #666;
-            color: white;
+            color: #fff;
             text-decoration: none;
             border-radius: 4px;
             font-size: 0.9rem;
+            font-weight: 700;
         }
-        .back-btn:hover {
-            background: #555;
-        }
+        .back-btn { background: #666; }
+        .back-btn:hover { background: #555; }
+        .nav-btn { background: #1d4f91; }
+        .nav-btn:hover { background: #143c70; }
         h1 {
             margin: 0;
             color: #333;
@@ -66,14 +69,14 @@
         }
         th {
             background: #333;
-            color: white;
-            padding: 1rem;
+            color: #fff;
+            padding: 0.85rem;
             text-align: left;
             font-weight: bold;
             font-size: 0.9rem;
         }
         td {
-            padding: 1rem;
+            padding: 0.8rem;
             border-bottom: 1px solid #ddd;
             text-align: center;
         }
@@ -90,10 +93,14 @@
             height: 18px;
             cursor: pointer;
         }
+        input[type="checkbox"][disabled] {
+            cursor: not-allowed;
+        }
         .button-group {
             display: flex;
             gap: 1rem;
             margin-top: 2rem;
+            flex-wrap: wrap;
         }
         button {
             padding: 0.6rem 1.5rem;
@@ -146,12 +153,13 @@
 
     <div class="container">
         <div class="header">
-            <a href="admin_landing_page.html" class="back-btn">← Back to Admin</a>
+            <a href="/" class="back-btn">← Back to Home</a>
+            <a href="/admin_user_roles.html" class="nav-btn">User Role Management</a>
             <h1>Role Permissions Management</h1>
         </div>
 
         <div class="description">
-            Control which pages each role can access. Check a box to grant access, uncheck to remove access.
+            Control which website pages each role can access. Homepage is always available to everyone.
         </div>
 
         <div class="success-message" id="successMessage">
@@ -163,18 +171,15 @@
                 <tr id="permissionsHeadRow">
                     <th>Role</th>
                     <th>Homepage</th>
-                    <th>Add Recipes</th>
-                    <th>View Recipes</th>
-                    <th>Book Shopping</th>
-                    <th>Add Booking</th>
-                    <th>Food Truck</th>
-                    <th>FT Teacher</th>
-                    <th>Planning</th>
-                    <th>Admin</th>
+                    <th>Staff Upload</th>
+                    <th>Student Upload</th>
+                    <th>Student Timetable</th>
+                    <th>Staff Timetable</th>
+                    <th>Admin Menu</th>
                 </tr>
             </thead>
             <tbody id="permissionsBody">
-                <tr><td colspan="10">Loading permissions...</td></tr>
+                <tr><td colspan="7">Loading permissions...</td></tr>
             </tbody>
         </table>
 
@@ -186,26 +191,22 @@
         <div class="info-box">
             <strong>Route Descriptions</strong>
             <ul>
-                <li><b>inventory:</b> Homepage access</li>
-                <li><b>recipes:</b> View and manage all recipes (full recipe management page)</li>
-                <li><b>add_recipes:</b> Create or load recipes into the system</li>
-                <li><b>shopping:</b> Book the Shopping - Shopping list generator interface</li>
-                <li><b>booking:</b> Add booking system for scheduling</li>
-                <li><b>food_truck:</b> Student Food Truck pages and flows</li>
-                <li><b>ft_teacher:</b> Teacher-side Food Truck pages (bookings, slot list, teacher tools)</li>
-                <li><b>planning:</b> Access the Planning menu (Upload Planners, Match Planner Recipes)</li>
-                <li><b>admin:</b> Administrative functions (staff/class upload, recipe management, permissions)</li>
+                <li><b>homepage:</b> Main dashboard, available to everyone.</li>
+                <li><b>staff_upload:</b> Access to staff upload page.</li>
+                <li><b>student_upload:</b> Access to student details upload page.</li>
+                <li><b>student_timetable:</b> Access to student timetable upload page.</li>
+                <li><b>staff_timetable:</b> Access to staff timetable upload page.</li>
+                <li><b>admin_menu:</b> Access to Admin menu links and admin pages.</li>
             </ul>
         </div>
 
         <div class="info-box">
             <strong>Important Notes</strong>
             <ul>
-                <li><b>Admin role</b> should always have access to all pages</li>
-                <li><b>Public Access</b> role is assigned to all users by default</li>
-                <li>Specific users can be granted additional roles (Teacher, Technician, Admin)</li>
-                <li>Changes take effect immediately</li>
-                <li>Users will see "Access Denied" if they try to access a page without permission</li>
+                <li>Only <b>Admin</b> and <b>Technician</b> users can sign in.</li>
+                <li>Role assignments are managed from the User Role Management page.</li>
+                <li>Homepage access is always enabled and cannot be removed.</li>
+                <li>Changes take effect immediately.</li>
             </ul>
         </div>
     </div>

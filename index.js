@@ -53,7 +53,7 @@ async function loadDashboardStats() {
 
 function persistSessionUser(user) {
   localStorage.setItem('kamarAuthUser', JSON.stringify(user || null));
-  if (user && user.role === 'staff') {
+  if (user && user.email) {
     sessionStorage.setItem('currentStaffUser', JSON.stringify({ email_school: user.email }));
   } else {
     sessionStorage.removeItem('currentStaffUser');

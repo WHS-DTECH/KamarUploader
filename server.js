@@ -89,6 +89,34 @@ const LEGACY_TIMETABLE_TABLES = [
   'timetable'
 ];
 
+const MANAGED_ROLES = ['admin', 'technician'];
+const ROLE_PERMISSION_KEYS = [
+  'homepage',
+  'staff_upload',
+  'student_upload',
+  'student_timetable',
+  'staff_timetable',
+  'admin_menu'
+];
+const DEFAULT_ROLE_PERMISSIONS = {
+  admin: {
+    homepage: true,
+    staff_upload: true,
+    student_upload: true,
+    student_timetable: true,
+    staff_timetable: true,
+    admin_menu: true
+  },
+  technician: {
+    homepage: true,
+    staff_upload: true,
+    student_upload: true,
+    student_timetable: true,
+    staff_timetable: true,
+    admin_menu: false
+  }
+};
+
 function normalizeKey(value) {
   return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -511,6 +539,84 @@ async function resolveUserAccessByEmail(email) {
   };
 }
 
+function toPermissionObject(row) {
+  const out = {};
+  ROLE_PERMISSION_KEYS.forEach((key) => {
+    out[key] = Boolean(row && row[key]);
+  });
+  out.homepage = true;
+  return out;
+}
+
+async function getRolePermissions(roleName) {
+  const role = String(roleName || '').trim().toLowerCase();
+  if (!MANAGED_ROLES.includes(role)) {
+    return toPermissionObject({ homepage: true });
+  }
+
+  const { rows } = await pool.query(
+    `
+    SELECT role_name, homepage, staff_upload, student_upload, student_timetable, staff_timetable, admin_menu
+    FROM app_role_permissions
+    WHERE role_name = $1
+    LIMIT 1;
+    `,
+    [role]
+  );
+
+  if (!rows[0]) {
+    return toPermissionObject(DEFAULT_ROLE_PERMISSIONS[role] || { homepage: true });
+  }
+
+  return toPermissionObject(rows[0]);
+}
+
+async function resolveManagedRoleForEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) return null;
+
+  const { rows } = await pool.query(
+    `
+    SELECT role_name
+    FROM app_user_roles
+    WHERE lower(user_email) = $1
+      AND role_name = ANY($2::text[])
+    ORDER BY CASE role_name WHEN 'admin' THEN 0 WHEN 'technician' THEN 1 ELSE 9 END;
+    `,
+    [normalized, MANAGED_ROLES]
+  );
+
+  if (!rows.length) return null;
+  return String(rows[0].role_name || '').trim().toLowerCase() || null;
+}
+
+function requireSession(req, res, next) {
+  const session = readSessionFromRequest(req);
+  if (!session) {
+    clearAuthCookie(res);
+    res.status(401).json({ success: false, error: 'You must be signed in.' });
+    return;
+  }
+
+  req.sessionUser = session;
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  if (!req.sessionUser) {
+    res.status(401).json({ success: false, error: 'Missing session context.' });
+    return;
+  }
+
+  const role = String(req.sessionUser.role || '').trim().toLowerCase();
+  if (role !== 'admin') {
+    res.status(403).json({ success: false, error: 'Admin access is required.' });
+    return;
+  }
+
+  next();
+}
+
 function getTimetableDataColumns(row) {
   return Object.keys(row || {}).filter((key) => {
     const normalized = normalizeKey(key);
@@ -651,6 +757,74 @@ async function ensureSchema() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_roles (
+      role_name TEXT PRIMARY KEY,
+      description TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_user_roles (
+      user_email TEXT NOT NULL,
+      role_name TEXT NOT NULL REFERENCES app_roles(role_name) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_email, role_name)
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_role_permissions (
+      role_name TEXT PRIMARY KEY REFERENCES app_roles(role_name) ON DELETE CASCADE,
+      homepage BOOLEAN NOT NULL DEFAULT TRUE,
+      staff_upload BOOLEAN NOT NULL DEFAULT FALSE,
+      student_upload BOOLEAN NOT NULL DEFAULT FALSE,
+      student_timetable BOOLEAN NOT NULL DEFAULT FALSE,
+      staff_timetable BOOLEAN NOT NULL DEFAULT FALSE,
+      admin_menu BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await withTransaction(async (client) => {
+    for (const role of MANAGED_ROLES) {
+      await client.query(
+        `
+        INSERT INTO app_roles (role_name, description, updated_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (role_name)
+        DO UPDATE SET
+          description = EXCLUDED.description,
+          updated_at = NOW();
+        `,
+        [role, role === 'admin' ? 'System administrator' : 'Technical support staff']
+      );
+
+      const defaults = DEFAULT_ROLE_PERMISSIONS[role];
+      await client.query(
+        `
+        INSERT INTO app_role_permissions (
+          role_name, homepage, staff_upload, student_upload, student_timetable, staff_timetable, admin_menu, updated_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+        ON CONFLICT (role_name)
+        DO NOTHING;
+        `,
+        [
+          role,
+          Boolean(defaults.homepage),
+          Boolean(defaults.staff_upload),
+          Boolean(defaults.student_upload),
+          Boolean(defaults.student_timetable),
+          Boolean(defaults.staff_timetable),
+          Boolean(defaults.admin_menu)
+        ]
+      );
+    }
+  });
 }
 
 app.get('/api/auth/google/config', (_req, res) => {
@@ -697,13 +871,26 @@ app.post('/api/auth/google-login', async (req, res) => {
     }
 
     const access = await resolveUserAccessByEmail(email);
+    if (!access.in_staff_upload) {
+      res.status(403).json({ success: false, error: 'Your account must exist in the current Staff Upload list.' });
+      return;
+    }
+
+    const managedRole = await resolveManagedRoleForEmail(email);
+    if (!managedRole || !MANAGED_ROLES.includes(managedRole)) {
+      res.status(403).json({ success: false, error: 'Only Admin and Technician users can sign in.' });
+      return;
+    }
+
+    const permissions = await getRolePermissions(managedRole);
     const now = Date.now();
     const sessionPayload = {
       email,
       name: String(payload.name || '').trim() || email,
       picture: String(payload.picture || '').trim() || null,
       hosted_domain: hostedDomain || null,
-      role: access.role,
+      role: managedRole,
+      permissions,
       in_staff_upload: access.in_staff_upload,
       in_student_upload: access.in_student_upload,
       issued_at: now,
@@ -734,6 +921,245 @@ app.get('/api/auth/session', (req, res) => {
   }
 
   res.json({ success: true, user: session });
+});
+
+app.get('/api/user_roles/options', requireSession, requireAdmin, async (_req, res) => {
+  try {
+    const [staffRows, roleRows] = await Promise.all([
+      pool.query(
+        `
+        SELECT email_school, first_name, last_name, code
+        FROM staff_upload
+        WHERE status = 'Current'
+          AND lower(coalesce(email_school, '')) <> ''
+        ORDER BY last_name ASC NULLS LAST, first_name ASC NULLS LAST;
+        `
+      ),
+      pool.query(`SELECT role_name FROM app_roles WHERE role_name = ANY($1::text[]) ORDER BY role_name ASC;`, [MANAGED_ROLES])
+    ]);
+
+    const users = staffRows.rows.map((row) => {
+      const email = String(row.email_school || '').trim().toLowerCase();
+      const name = [row.first_name, row.last_name].map((v) => String(v || '').trim()).filter(Boolean).join(' ');
+      const code = String(row.code || '').trim();
+      const labelCore = name || email;
+      const label = code ? `${labelCore} (${code})` : labelCore;
+      return { value: email, label };
+    });
+
+    const roles = roleRows.rows.map((row) => ({ role_name: String(row.role_name || '').toLowerCase() }));
+    res.json({ success: true, users, roles });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to load role assignment options.' });
+  }
+});
+
+app.get('/api/user_roles/all', requireSession, requireAdmin, async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        ur.user_email,
+        ARRAY_AGG(ur.role_name ORDER BY CASE ur.role_name WHEN 'admin' THEN 0 WHEN 'technician' THEN 1 ELSE 9 END) AS roles,
+        MIN(s.first_name) AS first_name,
+        MIN(s.last_name) AS last_name
+      FROM app_user_roles ur
+      LEFT JOIN staff_upload s ON lower(coalesce(s.email_school, '')) = lower(ur.user_email)
+      WHERE ur.role_name = ANY($1::text[])
+      GROUP BY ur.user_email
+      ORDER BY ur.user_email ASC;
+      `,
+      [MANAGED_ROLES]
+    );
+
+    const users = rows.map((row) => {
+      const email = String(row.user_email || '').trim().toLowerCase();
+      const name = [row.first_name, row.last_name].map((v) => String(v || '').trim()).filter(Boolean).join(' ');
+      return {
+        user_type: 'staff',
+        user_identifier: email,
+        user_label: name ? `${name} (${email})` : email,
+        roles: Array.isArray(row.roles) ? row.roles.map((r) => String(r || '').toLowerCase()) : []
+      };
+    });
+
+    res.json({ success: true, users });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to load user roles.' });
+  }
+});
+
+app.post('/api/user_roles/add', requireSession, requireAdmin, async (req, res) => {
+  try {
+    const userType = String(req.body?.user_type || 'staff').trim().toLowerCase();
+    const email = String(req.body?.user_identifier || '').trim().toLowerCase();
+    const roleName = String(req.body?.role_name || '').trim().toLowerCase();
+
+    if (userType !== 'staff') {
+      res.status(400).json({ success: false, error: 'Only staff role assignments are supported.' });
+      return;
+    }
+    if (!email) {
+      res.status(400).json({ success: false, error: 'User email is required.' });
+      return;
+    }
+    if (!MANAGED_ROLES.includes(roleName)) {
+      res.status(400).json({ success: false, error: 'Role must be Admin or Technician.' });
+      return;
+    }
+
+    const exists = await pool.query(
+      `
+      SELECT 1
+      FROM staff_upload
+      WHERE lower(coalesce(email_school, '')) = $1
+        AND status = 'Current'
+      LIMIT 1;
+      `,
+      [email]
+    );
+    if (!exists.rows.length) {
+      res.status(404).json({ success: false, error: 'User not found in current Staff Upload.' });
+      return;
+    }
+
+    await pool.query(
+      `
+      INSERT INTO app_user_roles (user_email, role_name, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (user_email, role_name)
+      DO UPDATE SET updated_at = NOW();
+      `,
+      [email, roleName]
+    );
+
+    res.json({ success: true, message: `Assigned ${roleName} role to ${email}.` });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to add role.' });
+  }
+});
+
+app.delete('/api/user_roles/:userType/:userIdentifier', requireSession, requireAdmin, async (req, res) => {
+  try {
+    const userType = String(req.params.userType || '').trim().toLowerCase();
+    const email = String(req.params.userIdentifier || '').trim().toLowerCase();
+    if (userType !== 'staff') {
+      res.status(400).json({ success: false, error: 'Only staff role assignments are supported.' });
+      return;
+    }
+    if (!email) {
+      res.status(400).json({ success: false, error: 'User email is required.' });
+      return;
+    }
+
+    await pool.query(`DELETE FROM app_user_roles WHERE lower(user_email) = $1;`, [email]);
+    res.json({ success: true, message: `Removed assigned roles for ${email}.` });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to remove user roles.' });
+  }
+});
+
+app.get('/api/permissions/all', requireSession, requireAdmin, async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT role_name, homepage, staff_upload, student_upload, student_timetable, staff_timetable, admin_menu
+      FROM app_role_permissions
+      WHERE role_name = ANY($1::text[])
+      ORDER BY CASE role_name WHEN 'admin' THEN 0 WHEN 'technician' THEN 1 ELSE 9 END;
+      `,
+      [MANAGED_ROLES]
+    );
+
+    res.json({ success: true, routes: ROLE_PERMISSION_KEYS, roles: rows.map((row) => ({ ...row, homepage: true })) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to load permissions.' });
+  }
+});
+
+app.put('/api/permissions/:roleName', requireSession, requireAdmin, async (req, res) => {
+  try {
+    const roleName = String(req.params.roleName || '').trim().toLowerCase();
+    if (!MANAGED_ROLES.includes(roleName)) {
+      res.status(400).json({ success: false, error: 'Unknown role.' });
+      return;
+    }
+
+    const permissions = {
+      homepage: true,
+      staff_upload: Boolean(req.body?.staff_upload),
+      student_upload: Boolean(req.body?.student_upload),
+      student_timetable: Boolean(req.body?.student_timetable),
+      staff_timetable: Boolean(req.body?.staff_timetable),
+      admin_menu: Boolean(req.body?.admin_menu)
+    };
+
+    await pool.query(
+      `
+      UPDATE app_role_permissions
+      SET homepage = $2,
+          staff_upload = $3,
+          student_upload = $4,
+          student_timetable = $5,
+          staff_timetable = $6,
+          admin_menu = $7,
+          updated_at = NOW()
+      WHERE role_name = $1;
+      `,
+      [
+        roleName,
+        permissions.homepage,
+        permissions.staff_upload,
+        permissions.student_upload,
+        permissions.student_timetable,
+        permissions.staff_timetable,
+        permissions.admin_menu
+      ]
+    );
+
+    res.json({ success: true, role_name: roleName, permissions });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to update permissions.' });
+  }
+});
+
+app.post('/api/permissions/reset', requireSession, requireAdmin, async (_req, res) => {
+  try {
+    await withTransaction(async (client) => {
+      for (const role of MANAGED_ROLES) {
+        const defaults = DEFAULT_ROLE_PERMISSIONS[role];
+        await client.query(
+          `
+          INSERT INTO app_role_permissions (
+            role_name, homepage, staff_upload, student_upload, student_timetable, staff_timetable, admin_menu, updated_at
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+          ON CONFLICT (role_name)
+          DO UPDATE SET
+            homepage = EXCLUDED.homepage,
+            staff_upload = EXCLUDED.staff_upload,
+            student_upload = EXCLUDED.student_upload,
+            student_timetable = EXCLUDED.student_timetable,
+            staff_timetable = EXCLUDED.staff_timetable,
+            admin_menu = EXCLUDED.admin_menu,
+            updated_at = NOW();
+          `,
+          [
+            role,
+            Boolean(defaults.homepage),
+            Boolean(defaults.staff_upload),
+            Boolean(defaults.student_upload),
+            Boolean(defaults.student_timetable),
+            Boolean(defaults.staff_timetable),
+            Boolean(defaults.admin_menu)
+          ]
+        );
+      }
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to reset permissions.' });
+  }
 });
 
 app.post('/api/auth/logout', (_req, res) => {

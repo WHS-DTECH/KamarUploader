@@ -1,34 +1,21 @@
 let permissionsData = [];
-let ROUTES = ['inventory', 'add_recipes', 'recipes', 'shopping', 'booking', 'food_truck', 'ft_teacher', 'planning', 'admin'];
+let ROUTES = ['homepage', 'staff_upload', 'student_upload', 'student_timetable', 'staff_timetable', 'admin_menu'];
 const ROUTE_LABELS = {
-  inventory: 'Homepage',
-  add_recipes: 'Add Recipes',
-  recipes: 'View Recipes',
-  shopping: 'Book Shopping',
-  booking: 'Add Booking',
-  food_truck: 'Food Truck',
-  ft_teacher: 'FT Teacher',
-  planning: 'Planning',
-  admin: 'Admin'
+  homepage: 'Homepage',
+  staff_upload: 'Staff Upload',
+  student_upload: 'Student Upload',
+  student_timetable: 'Student Timetable',
+  staff_timetable: 'Staff Timetable',
+  admin_menu: 'Admin Menu'
 };
 
-function getCurrentStaffEmail() {
-  try {
-    const raw = sessionStorage.getItem('currentStaffUser');
-    const parsed = raw ? JSON.parse(raw) : null;
-    return String(parsed && parsed.email_school ? parsed.email_school : '').trim().toLowerCase();
-  } catch (err) {
-    return '';
+async function authFetch(url, init) {
+  const response = await fetch(url, init);
+  if (response.status === 401 || response.status === 403) {
+    window.location.href = '/';
+    throw new Error('You are not authorized to use this page.');
   }
-}
-
-function withAdminIdentityHeaders(headers = {}) {
-  const merged = { ...headers };
-  const staffEmail = getCurrentStaffEmail();
-  const role = String(sessionStorage.getItem('navbar_user_role') || '').trim().toLowerCase();
-  if (staffEmail) merged['x-user-email'] = staffEmail;
-  if (role) merged['x-user-role'] = role;
-  return merged;
+  return response;
 }
 
 // Fetch permissions from backend on page load
@@ -40,7 +27,7 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 function fetchPermissions() {
-  fetch('/api/permissions/all')
+  authFetch('/api/permissions/all')
     .then(res => res.json())
     .then(data => {
       if (data.success) {
@@ -72,7 +59,8 @@ function renderPermissionsTable(roles = []) {
     let html = `<tr><td>${formatRoleName(role.role_name)}</td>`;
     ROUTES.forEach(route => {
       const isChecked = role[route] ? 'checked' : '';
-      html += `<td><input type="checkbox" class="route-checkbox" data-role="${role.role_name}" data-route="${route}" ${isChecked} /></td>`;
+      const disabled = route === 'homepage' ? 'disabled' : '';
+      html += `<td><input type="checkbox" class="route-checkbox" data-role="${role.role_name}" data-route="${route}" ${isChecked} ${disabled} /></td>`;
     });
     html += '</tr>';
     return html;
@@ -119,9 +107,9 @@ function savePermissions() {
       permissions[route] = checkbox ? checkbox.checked : false;
     });
 
-    fetch(`/api/permissions/${roleName}`, {
+    authFetch(`/api/permissions/${roleName}`, {
       method: 'PUT',
-      headers: withAdminIdentityHeaders({ 'Content-Type': 'application/json' }),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(permissions)
     })
       .then(res => res.json())
@@ -166,9 +154,9 @@ function resetPermissions() {
   resetBtn.disabled = true;
   resetBtn.textContent = 'Resetting...';
 
-  fetch('/api/permissions/reset', {
+  authFetch('/api/permissions/reset', {
     method: 'POST',
-    headers: withAdminIdentityHeaders({ 'Content-Type': 'application/json' })
+    headers: { 'Content-Type': 'application/json' }
   })
     .then(res => res.json())
     .then(data => {

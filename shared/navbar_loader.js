@@ -3,12 +3,26 @@
   if (!host) return;
 
   const links = [
-    { href: '/', label: 'Home' },
-    { href: '/staff_upload.html', label: 'Staff Upload' },
-    { href: '/student_details_upload.html', label: 'Student Upload' },
-    { href: '/student_upload.html', label: 'Student Timetable' },
-    { href: '/timetable_upload.html', label: 'Staff Timetable' }
+    { href: '/', label: 'Home', permission: 'homepage' },
+    { href: '/staff_upload.html', label: 'Staff Upload', permission: 'staff_upload' },
+    { href: '/student_details_upload.html', label: 'Student Upload', permission: 'student_upload' },
+    { href: '/student_upload.html', label: 'Student Timetable', permission: 'student_timetable' },
+    { href: '/timetable_upload.html', label: 'Staff Timetable', permission: 'staff_timetable' }
   ];
+
+  const adminLinks = [
+    { href: '/admin_user_roles.html', label: 'User Role Management' },
+    { href: '/admin_permissions.html', label: 'Role Permissions' }
+  ];
+
+  const pagePermissionMap = {
+    '/staff_upload.html': 'staff_upload',
+    '/student_details_upload.html': 'student_upload',
+    '/student_upload.html': 'student_timetable',
+    '/timetable_upload.html': 'staff_timetable',
+    '/admin_user_roles.html': 'admin_menu',
+    '/admin_permissions.html': 'admin_menu'
+  };
 
   function escapeHtml(value) {
     return String(value || '')
@@ -29,8 +43,52 @@
     }
   }
 
+  function hasPermission(user, permission) {
+    if (!permission) return true;
+    if (!user || !user.email) return permission === 'homepage';
+    const perms = user.permissions || {};
+    return Boolean(perms[permission]);
+  }
+
+  function enforceRouteAccess(user) {
+    const pathName = String(window.location.pathname || '/').toLowerCase();
+    if (pathName === '/' || pathName === '/index.html') return;
+
+    const requiredPermission = pagePermissionMap[pathName];
+    if (!requiredPermission) return;
+
+    if (!user || !user.email || !hasPermission(user, requiredPermission)) {
+      window.location.href = '/';
+    }
+  }
+
+  function renderNavLinks(user) {
+    return links
+      .filter((link) => hasPermission(user, link.permission))
+      .map((link) => `<a href="${link.href}">${link.label}</a>`)
+      .join('');
+  }
+
+  function renderAdminMenu(user) {
+    const role = String((user && user.role) || '').trim().toLowerCase();
+    if (!user || !user.email || role !== 'admin' || !hasPermission(user, 'admin_menu')) {
+      return '';
+    }
+
+    return `
+      <div class="top-nav-admin-menu">
+        <button type="button" class="top-nav-admin-btn">Admin</button>
+        <div class="top-nav-admin-dropdown">
+          ${adminLinks.map((item) => `<a href="${item.href}">${item.label}</a>`).join('')}
+        </div>
+      </div>
+    `;
+  }
+
   function applyNav() {
     const user = getAuthUser();
+    enforceRouteAccess(user);
+
     const signedIn = Boolean(user && user.email);
     const userText = signedIn
       ? `${user.name || user.email} (${String(user.role || 'guest').toUpperCase()})`
@@ -40,7 +98,8 @@
       <nav class="top-nav" aria-label="Main navigation">
         <div class="top-nav-inner">
           <div class="top-nav-links">
-            ${links.map((link) => `<a href="${link.href}">${link.label}</a>`).join('')}
+            ${renderNavLinks(user)}
+            ${renderAdminMenu(user)}
           </div>
           <div class="top-nav-user">
             <span class="top-nav-user-chip">${escapeHtml(userText)}</span>

@@ -40,6 +40,52 @@ a {
   align-items: center;
 }
 
+.top-nav-admin-menu {
+  position: relative;
+}
+
+.top-nav-admin-btn {
+  border: 1px solid #334155;
+  background: #12233a;
+  color: #cbd5e1;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  padding: 0.35rem 0.65rem;
+  cursor: pointer;
+}
+
+.top-nav-admin-btn:hover {
+  background: #1e293b;
+  color: #fff;
+}
+
+.top-nav-admin-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 220px;
+  padding: 0.35rem;
+  border-radius: 10px;
+  border: 1px solid #334155;
+  background: #0f172a;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.24);
+  z-index: 60;
+}
+
+.top-nav-admin-dropdown a {
+  display: block;
+  border-radius: 8px;
+  padding: 0.45rem 0.55rem;
+  margin: 0.1rem 0;
+}
+
+.top-nav-admin-menu:hover .top-nav-admin-dropdown,
+.top-nav-admin-menu:focus-within .top-nav-admin-dropdown {
+  display: block;
+}
+
 .top-nav-user {
   display: flex;
   align-items: center;
