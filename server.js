@@ -1,6 +1,5 @@
 require('dotenv').config();
 
-const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
@@ -53,8 +52,6 @@ const STUDENT_PERIOD_KEYS = [
 
 const STUDENT_BASE_KEYS = ['student_name', 'id_number', 'form_class', 'year_level'];
 const STUDENT_KEYS = [...STUDENT_BASE_KEYS, ...STUDENT_PERIOD_KEYS];
-
-const STUDENT_EMAIL_CSV_PATH = path.join(__dirname, 'csv', 'StudentList_email.csv');
 
 const STUDENT_ALIASES = {
   student_name: ['studentname', 'name'],
@@ -159,82 +156,19 @@ function mapStudentRow(row, headerMap) {
   return mapped;
 }
 
-function parseCsvLine(line) {
-  const out = [];
-  let current = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i];
-
-    if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-
-    if (ch === ',' && !inQuotes) {
-      out.push(current);
-      current = '';
-      continue;
-    }
-
-    current += ch;
-  }
-
-  out.push(current);
-  return out.map((v) => String(v || '').trim());
-}
-
-async function syncStudentEmailsFromCsv(filePath = STUDENT_EMAIL_CSV_PATH) {
-  if (!fs.existsSync(filePath)) {
-    return {
-      file: filePath,
-      found: false,
-      processed: 0,
-      updated: 0,
-      not_found_in_student_upload: 0,
-      skipped_missing_fields: 0
-    };
-  }
-
-  const raw = await fs.promises.readFile(filePath, 'utf8');
-  const lines = raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (lines.length < 2) {
-    return {
-      file: filePath,
-      found: true,
-      processed: 0,
-      updated: 0,
-      not_found_in_student_upload: 0,
-      skipped_missing_fields: 0
-    };
-  }
-
-  const headers = parseCsvLine(lines[0]);
-  const indexLookup = buildIndexLookup(headers);
-  const studentIdIdx = indexLookup.get(normalizeKey('Student ID'));
-  const emailIdx = indexLookup.get(normalizeKey('Student email - School'));
-
-  if (studentIdIdx == null || emailIdx == null) {
-    throw new Error('StudentList_email.csv is missing required headers: Student ID, Student email - School');
-  }
+async function syncStudentEmailsFromStudentUpload() {
+  const sourceRows = await pool.query(`
+    SELECT id_number, email_school
+    FROM student_details_upload
+    WHERE status = 'Current';
+  `);
 
   const updates = new Map();
   let skippedMissingFields = 0;
 
-  for (const line of lines.slice(1)) {
-    const cols = parseCsvLine(line);
-    const studentId = String(cols[studentIdIdx] || '').trim();
-    const email = String(cols[emailIdx] || '').trim().toLowerCase();
+  for (const row of sourceRows.rows || []) {
+    const studentId = String(row.id_number || '').trim();
+    const email = String(row.email_school || '').trim().toLowerCase();
 
     if (!studentId || !email) {
       skippedMissingFields += 1;
@@ -266,8 +200,6 @@ async function syncStudentEmailsFromCsv(filePath = STUDENT_EMAIL_CSV_PATH) {
   });
 
   return {
-    file: filePath,
-    found: true,
     processed: payload.length,
     updated,
     not_found_in_student_upload: notFound,
@@ -921,14 +853,7 @@ app.get('/api/student_upload/all', async (_req, res) => {
 
 app.post('/api/student_upload/sync-emails', async (req, res) => {
   try {
-    const customPath = String(req.body?.filePath || '').trim();
-    const resolvedPath = customPath
-      ? path.isAbsolute(customPath)
-        ? customPath
-        : path.join(__dirname, customPath)
-      : STUDENT_EMAIL_CSV_PATH;
-
-    const result = await syncStudentEmailsFromCsv(resolvedPath);
+    const result = await syncStudentEmailsFromStudentUpload();
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message || 'Failed to sync student emails.' });
@@ -1540,14 +1465,10 @@ app.use((err, _req, res, _next) => {
 ensureSchema()
   .then(async () => {
     try {
-      const syncResult = await syncStudentEmailsFromCsv();
-      if (syncResult.found) {
-        console.log(
-          `Student email sync: found=true, processed=${syncResult.processed}, updated=${syncResult.updated}, not_found=${syncResult.not_found_in_student_upload}, skipped_missing_fields=${syncResult.skipped_missing_fields}`
-        );
-      } else {
-        console.log('Student email sync skipped: csv/StudentList_email.csv not found');
-      }
+      const syncResult = await syncStudentEmailsFromStudentUpload();
+      console.log(
+        `Student email sync: processed=${syncResult.processed}, updated=${syncResult.updated}, not_found=${syncResult.not_found_in_student_upload}, skipped_missing_fields=${syncResult.skipped_missing_fields}`
+      );
     } catch (error) {
       console.warn(`Student email sync warning: ${error.message}`);
     }

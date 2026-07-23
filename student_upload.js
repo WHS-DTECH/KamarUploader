@@ -107,10 +107,10 @@ function hideUploadProgress() {
   if (wrap) wrap.style.display = 'none';
 }
 
-async function syncStudentEmailsFromCsv() {
+async function syncStudentEmails() {
   const btn = document.getElementById('syncStudentEmailsBtn');
   const resultEl = document.getElementById('uploadResult');
-  const originalText = btn ? btn.textContent : 'Sync Student Emails From CSV';
+  const originalText = btn ? btn.textContent : 'Sync Student Emails';
 
   if (btn) {
     btn.disabled = true;
@@ -138,7 +138,7 @@ async function syncStudentEmailsFromCsv() {
     }
     fetchAndRenderStudentTable();
   } catch (err) {
-    if (resultEl) resultEl.textContent = 'Email sync failed: ' + (err.message || err);
+    if (resultEl) resultEl.textContent = 'Email sync failed from Student Upload data: ' + (err.message || err);
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -285,7 +285,7 @@ window.addEventListener('DOMContentLoaded', function () {
 
   const syncBtn = document.getElementById('syncStudentEmailsBtn');
   if (syncBtn) {
-    syncBtn.addEventListener('click', syncStudentEmailsFromCsv);
+    syncBtn.addEventListener('click', syncStudentEmails);
   }
 });
 
