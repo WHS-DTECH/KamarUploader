@@ -1,9 +1,11 @@
 require('dotenv').config();
 
+const crypto = require('crypto');
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const { OAuth2Client } = require('google-auth-library');
 
 const app = express();
 const port = Number(process.env.PORT || 10000);
@@ -22,6 +24,17 @@ const pool = new Pool({
 app.use(cors());
 app.use(express.json({ limit: '25mb' }));
 app.use(express.static(path.join(__dirname)));
+
+const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || '').trim();
+const GOOGLE_ALLOWED_DOMAIN = String(process.env.GOOGLE_ALLOWED_DOMAIN || 'westlandhigh.school.nz').trim().toLowerCase();
+const SESSION_COOKIE_NAME = 'kamar_auth';
+const AUTH_SESSION_SECRET = String(process.env.AUTH_SESSION_SECRET || '').trim() || crypto.randomBytes(32).toString('hex');
+const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 12;
+const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+
+if (!process.env.AUTH_SESSION_SECRET) {
+  console.warn('AUTH_SESSION_SECRET is not set. Sessions will reset on server restart.');
+}
 
 const STAFF_FIELDS = {
   code: ['code', 'staffcode'],
@@ -385,6 +398,119 @@ function includesText(value, q) {
   return String(value || '').toLowerCase().includes(String(q || '').toLowerCase());
 }
 
+function base64UrlEncode(value) {
+  return Buffer.from(value)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function base64UrlDecode(value) {
+  const text = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padLength = (4 - (text.length % 4)) % 4;
+  const padded = `${text}${'='.repeat(padLength)}`;
+  return Buffer.from(padded, 'base64').toString('utf8');
+}
+
+function parseCookieHeader(cookieHeader) {
+  const out = {};
+  String(cookieHeader || '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .forEach((pair) => {
+      const idx = pair.indexOf('=');
+      if (idx <= 0) return;
+      const key = pair.slice(0, idx).trim();
+      const value = pair.slice(idx + 1).trim();
+      out[key] = decodeURIComponent(value);
+    });
+  return out;
+}
+
+function signSessionBody(body) {
+  return crypto.createHmac('sha256', AUTH_SESSION_SECRET).update(body).digest('hex');
+}
+
+function createSessionToken(payload) {
+  const body = base64UrlEncode(JSON.stringify(payload));
+  const signature = signSessionBody(body);
+  return `${body}.${signature}`;
+}
+
+function readSessionFromRequest(req) {
+  const cookies = parseCookieHeader(req.headers.cookie || '');
+  const token = cookies[SESSION_COOKIE_NAME];
+  if (!token) return null;
+
+  const [body, signature] = String(token || '').split('.');
+  if (!body || !signature) return null;
+
+  const expectedSignature = signSessionBody(body);
+  if (signature !== expectedSignature) return null;
+
+  try {
+    const payload = JSON.parse(base64UrlDecode(body));
+    if (!payload || typeof payload !== 'object') return null;
+    if (Number(payload.expires_at || 0) < Date.now()) return null;
+    return payload;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function clearAuthCookie(res) {
+  res.clearCookie(SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/'
+  });
+}
+
+async function resolveUserAccessByEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) {
+    return { role: 'guest', in_staff_upload: false, in_student_upload: false };
+  }
+
+  const [staffCheck, studentCheck] = await Promise.all([
+    pool.query(
+      `
+      SELECT EXISTS(
+        SELECT 1
+        FROM staff_upload
+        WHERE lower(coalesce(email_school, '')) = $1
+          AND status = 'Current'
+      ) AS present;
+      `,
+      [normalized]
+    ),
+    pool.query(
+      `
+      SELECT EXISTS(
+        SELECT 1
+        FROM student_details_upload
+        WHERE lower(coalesce(email_school, '')) = $1
+          AND status = 'Current'
+      ) AS present;
+      `,
+      [normalized]
+    )
+  ]);
+
+  const inStaffUpload = Boolean(staffCheck.rows[0]?.present);
+  const inStudentUpload = Boolean(studentCheck.rows[0]?.present);
+  const role = inStaffUpload ? 'staff' : (inStudentUpload ? 'student' : 'guest');
+
+  return {
+    role,
+    in_staff_upload: inStaffUpload,
+    in_student_upload: inStudentUpload
+  };
+}
+
 function getTimetableDataColumns(row) {
   return Object.keys(row || {}).filter((key) => {
     const normalized = normalizeKey(key);
@@ -526,6 +652,94 @@ async function ensureSchema() {
     );
   `);
 }
+
+app.get('/api/auth/google/config', (_req, res) => {
+  res.json({
+    enabled: Boolean(GOOGLE_CLIENT_ID),
+    client_id: GOOGLE_CLIENT_ID || null,
+    allowed_domain: GOOGLE_ALLOWED_DOMAIN || null
+  });
+});
+
+app.post('/api/auth/google-login', async (req, res) => {
+  try {
+    if (!GOOGLE_CLIENT_ID || !googleClient) {
+      res.status(503).json({ success: false, error: 'Google Login is not configured on this server.' });
+      return;
+    }
+
+    const credential = String(req.body?.credential || '').trim();
+    if (!credential) {
+      res.status(400).json({ success: false, error: 'Missing Google credential token.' });
+      return;
+    }
+
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: GOOGLE_CLIENT_ID
+    });
+    const payload = ticket.getPayload() || {};
+
+    const email = String(payload.email || '').trim().toLowerCase();
+    const emailVerified = Boolean(payload.email_verified);
+    const hostedDomain = String(payload.hd || '').trim().toLowerCase();
+    const emailDomain = email.includes('@') ? email.split('@')[1] : '';
+    const domainAllowed = !GOOGLE_ALLOWED_DOMAIN || hostedDomain === GOOGLE_ALLOWED_DOMAIN || emailDomain === GOOGLE_ALLOWED_DOMAIN;
+
+    if (!email || !emailVerified) {
+      res.status(403).json({ success: false, error: 'Google account email is missing or not verified.' });
+      return;
+    }
+
+    if (!domainAllowed) {
+      res.status(403).json({ success: false, error: `Sign-in restricted to ${GOOGLE_ALLOWED_DOMAIN} accounts.` });
+      return;
+    }
+
+    const access = await resolveUserAccessByEmail(email);
+    const now = Date.now();
+    const sessionPayload = {
+      email,
+      name: String(payload.name || '').trim() || email,
+      picture: String(payload.picture || '').trim() || null,
+      hosted_domain: hostedDomain || null,
+      role: access.role,
+      in_staff_upload: access.in_staff_upload,
+      in_student_upload: access.in_student_upload,
+      issued_at: now,
+      expires_at: now + SESSION_MAX_AGE_MS
+    };
+
+    const sessionToken = createSessionToken(sessionPayload);
+    res.cookie(SESSION_COOKIE_NAME, sessionToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: SESSION_MAX_AGE_MS,
+      path: '/'
+    });
+
+    res.json({ success: true, user: sessionPayload });
+  } catch (error) {
+    res.status(401).json({ success: false, error: 'Google sign-in verification failed.' });
+  }
+});
+
+app.get('/api/auth/session', (req, res) => {
+  const session = readSessionFromRequest(req);
+  if (!session) {
+    clearAuthCookie(res);
+    res.status(401).json({ success: false, user: null });
+    return;
+  }
+
+  res.json({ success: true, user: session });
+});
+
+app.post('/api/auth/logout', (_req, res) => {
+  clearAuthCookie(res);
+  res.json({ success: true });
+});
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
@@ -1454,7 +1668,7 @@ app.put('/api/upload_timetable/row/:teacherKey', async (req, res) => {
 });
 
 app.get('/', (_req, res) => {
-  res.redirect('/staff_upload.html');
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 app.use((err, _req, res, _next) => {

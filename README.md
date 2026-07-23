@@ -25,12 +25,18 @@ Create a `.env` file locally or set environment variables in Render:
 
 - `DATABASE_URL` (required)
 - `PORT` (optional, defaults to `10000`)
+- `GOOGLE_CLIENT_ID` (optional, required for Google Login)
+- `GOOGLE_ALLOWED_DOMAIN` (optional, defaults to `westlandhigh.school.nz`)
+- `AUTH_SESSION_SECRET` (optional but strongly recommended for stable signed sessions)
 
 Example:
 
 ```
 DATABASE_URL=postgresql://username:password@host:5432/database
 PORT=10000
+GOOGLE_CLIENT_ID=your-google-oauth-client-id.apps.googleusercontent.com
+GOOGLE_ALLOWED_DOMAIN=westlandhigh.school.nz
+AUTH_SESSION_SECRET=replace-with-a-long-random-secret
 ```
 
 ## Local run
@@ -50,12 +56,17 @@ npm start
 3. Open:
 
 - `http://localhost:10000/staff_upload.html`
+- `http://localhost:10000/` (homepage dashboard + Google sign-in)
 - `http://localhost:10000/student_upload.html`
 - `http://localhost:10000/timetable_upload.html`
 
 ## API routes
 
 - `GET /health`
+- `GET /api/auth/google/config`
+- `POST /api/auth/google-login`
+- `GET /api/auth/session`
+- `POST /api/auth/logout`
 - `GET /api/staff_upload/all`
 - `POST /api/staff_upload`
 - `GET /api/student_upload/all`
@@ -63,6 +74,14 @@ npm start
 - `GET /api/timetable/all`
 - `POST /api/upload_timetable`
 - `PUT /api/upload_timetable/row/:teacherKey`
+
+## Google Login setup
+
+1. Create an OAuth Client ID in Google Cloud Console (type: Web application).
+2. Add your website origin (for local dev: `http://localhost:10000`, for Render: your deployed domain).
+3. Set `GOOGLE_CLIENT_ID` on the server.
+4. Set `GOOGLE_ALLOWED_DOMAIN` to your school domain if you want domain-restricted sign-in.
+5. Set `AUTH_SESSION_SECRET` to a long random value (at least 32 chars).
 
 ## Render deployment notes
 
